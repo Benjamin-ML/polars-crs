@@ -20,6 +20,15 @@ df.with_columns(pl.col("x").crs.guess("y"))
 # per-row labels
 ```
 
+## Install
+
+```bash
+pip install polars-crs
+```
+
+Wheels are published for Linux (x86_64, aarch64), Windows (x64) and macOS
+(Apple Silicon). Intel macOS builds from the sdist and needs a Rust toolchain.
+
 ## API
 
 | Function | Shape | Returns |

@@ -132,8 +132,9 @@ jobs:
     strategy:
       matrix:
         platform:
-          - runner: macos-15-intel
-            target: x86_64
+          # Intel macOS is not built. Apple stopped shipping those machines in
+          # 2023 and GitHub removes the x86_64 macOS runner in 2027. Intel Mac
+          # users fall back to the sdist.
           - runner: macos-14
             target: aarch64
     steps:
