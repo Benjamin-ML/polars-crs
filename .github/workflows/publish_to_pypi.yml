@@ -192,7 +192,7 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: PyO3/maturin-action@v1
         env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_ALL_PROJECTS_ACCESS }}
+          MATURIN_PYPI_TOKEN: ${{ secrets.POLARS_CRS_PYPI_TOKEN }}
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
