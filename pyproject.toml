@@ -27,9 +27,9 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/Benjamin-ML/polars-crs"
-Repository = "https://github.com/Benjamin-ML/polars-crs"
-Issues = "https://github.com/Benjamin-ML/polars-crs/issues"
+Homepage = "https://github.com/benjamin-naderi-gh/polars-crs"
+Repository = "https://github.com/benjamin-naderi-gh/polars-crs"
+Issues = "https://github.com/benjamin-naderi-gh/polars-crs/issues"
 
 [tool.pytest.ini_options]
 pythonpath = ["tests"]
