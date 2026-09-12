@@ -50,6 +50,17 @@ every row to match would let one bad row discard the correct answer.
 `detect_report` exposes the match fractions so callers can see how firm the
 verdict is.
 
+## The decision rule
+
+Only the narrowest-match shares decide the verdict. They are exclusive and sum
+to one, so they are the only evidence that cannot be inflated by a wide range.
+
+Containment is diagnostic. Letting it decide produced a confident wrong answer
+twice: first when a broad range contained both halves of a mixed column, and
+again in the band where no system reached the single-label threshold and the
+verdict fell through to whatever contained the most rows. Both times the answer
+named a system with no coordinates in the data.
+
 ## Mixtures
 
 Counting only how many rows each range contains is not enough. A broad range
@@ -87,7 +98,9 @@ and y exchanged while it does not fit as given. That only separates the two
 where some row carries a longitude beyond +/-90, since anything inside the
 latitude range is a valid coordinate either way round.
 
-**Null Island.** Exact (0, 0) is dropped before scoring. It is open ocean, so it
+**Null Island.** Anything within 1e-9 of (0, 0) is dropped before scoring. An
+epsilon rather than an exact test, since float arithmetic produces denormals and
+near-zero residue where zero was meant. It is open ocean, so it
 is almost always a missing value encoded as a number, and counting it lets a
 column of missing data read as confident WGS84. Dropped rows are counted and
 reported rather than silently discarded.

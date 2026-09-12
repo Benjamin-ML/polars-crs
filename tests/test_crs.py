@@ -79,15 +79,27 @@ def test_detect_returns_one_row():
     assert out.height == 1
 
 
-def test_detect_candidates_reports_ambiguity():
+def test_detect_candidates_lists_narrowest_matches_only():
+    """Containment is diagnostic, not a candidate.
+
+    EPSG:27700 contains every Dutch point but is the narrowest match for none,
+    so it is not a candidate. detect_report still shows the containment.
+    """
     got = _frame(RD_NEW).select(plc.detect_candidates("x", "y")).item()
-    assert "EPSG:28992" in got and "EPSG:27700" in got
+    assert got == "EPSG:28992"
+    assert (
+        "EPSG:27700=0.00/1.00"
+        in _frame(RD_NEW).select(plc.detect_report("x", "y")).item()
+    )
 
 
-def test_mixed_systems_collapse_to_unknown():
-    """A column mixing WGS84 and Web Mercator is consistent with nothing narrow."""
+def test_mixture_containing_web_mercator_is_flagged():
+    """Web Mercator contains almost everything, so it used to win on
+    containment and hide the other half of the column."""
     df = pl.DataFrame({"x": [4.9, 545921.9], "y": [52.3, 6866867.1]})
-    assert df.select(plc.detect("x", "y")).item() == "EPSG:3857"
+    got = df.select(plc.detect("x", "y")).item()
+    assert got.startswith("mixed:")
+    assert "EPSG:4326" in got and "EPSG:3857" in got
 
 
 # --- edge cases --------------------------------------------------------------
@@ -205,7 +217,7 @@ def test_mixed_column_is_not_reported_as_a_third_system():
 
 def test_mixed_column_detect_candidates_agrees():
     got = _mix(RD_NEW, WGS84).select(plc.detect_candidates("x", "y")).item()
-    assert got.startswith("mixed:")
+    assert set(got.split("|")) == {"EPSG:4326", "EPSG:28992"}
 
 
 @pytest.mark.parametrize(
@@ -296,7 +308,7 @@ def test_null_island_rows_are_reported_not_hidden():
     ys = [r[2] for r in RD_NEW] + [0.0, 0.0]
     df = pl.DataFrame({"x": xs, "y": ys})
     assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
-    assert "null-island-rows=2" in df.select(plc.detect_report("x", "y")).item()
+    assert "null-island=2/" in df.select(plc.detect_report("x", "y")).item()
 
 
 def test_zero_pairs_do_not_dilute_the_verdict():
@@ -305,3 +317,59 @@ def test_zero_pairs_do_not_dilute_the_verdict():
     ys = [r[2] for r in RD_NEW] + [0.0] * 20
     df = pl.DataFrame({"x": xs, "y": ys})
     assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+
+
+# --- containment must never decide the verdict -------------------------------
+
+RD_PT = (121000.0, 487000.0)
+WGS_PT = (4.9041, 52.3676)
+MERC_PT = (545921.9, 6866867.1)
+
+
+def _pts(pairs):
+    return pl.DataFrame({"x": [p[0] for p in pairs], "y": [p[1] for p in pairs]})
+
+
+@pytest.mark.parametrize("dominant", [0.80, 0.90, 0.905, 0.94, 0.95, 0.99, 1.0])
+def test_no_phantom_system_at_any_contamination_level(dominant):
+    """There must be no band where a merely-containing range wins.
+
+    Between the mixture floor and the single-label threshold, nothing used to
+    qualify and the verdict fell through to EPSG:27700, which contains both
+    Dutch and WGS84 values while being preferred by neither.
+    """
+    n = 1000
+    k = round(dominant * n)
+    got = _pts([RD_PT] * k + [WGS_PT] * (n - k)).select(plc.detect("x", "y")).item()
+    assert got == "EPSG:28992", f"{dominant}: {got}"
+
+
+@pytest.mark.parametrize(
+    "pairs,expected",
+    [
+        ([(RD_PT, 50), (MERC_PT, 50)], {"EPSG:28992", "EPSG:3857"}),
+        (
+            [(RD_PT, 33), (WGS_PT, 33), (MERC_PT, 33)],
+            {"EPSG:4326", "EPSG:28992", "EPSG:3857"},
+        ),
+        ([(WGS_PT, 50), (MERC_PT, 50)], {"EPSG:4326", "EPSG:3857"}),
+    ],
+)
+def test_mixtures_with_web_mercator_are_not_reported_as_mercator(pairs, expected):
+    """EPSG:3857 contains nearly everything, so containment made it swallow
+    any column it was merged into."""
+    rows = [p for pt, n in pairs for p in [pt] * n]
+    got = _pts(rows).select(plc.detect("x", "y")).item()
+    assert got.startswith("mixed:")
+    assert set(got.removeprefix("mixed:").split("|")) == expected
+
+
+@pytest.mark.parametrize("tiny", [5e-324, 1e-300, 1e-12])
+def test_near_zero_counts_as_null_island(tiny):
+    """An exact comparison let denormals and float residue through."""
+    assert _pts([(tiny, tiny)] * 5).select(plc.detect("x", "y")).item() == "unknown"
+
+
+def test_report_surfaces_how_much_was_dropped():
+    df = _pts([WGS_PT] * 5 + [(0.0, 0.0)] * 95)
+    assert "null-island=95/100" in df.select(plc.detect_report("x", "y")).item()

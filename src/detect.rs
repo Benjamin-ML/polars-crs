@@ -16,9 +16,21 @@ use crate::crs::{match_mask, CRS_DEFS, MIXED, SWAPPED, UNKNOWN, WGS84};
 /// correct answer.
 pub const MATCH_THRESHOLD: f64 = 0.95;
 
-/// A system whose narrowest-match share reaches this counts as a component of
-/// a mixture, rather than noise from overlapping ranges.
-pub const MIXTURE_MIN: f64 = 0.10;
+/// A single system must be the narrowest match for at least this share of the
+/// rows to be reported on its own.
+///
+/// Not 1.0, because ranges overlap: some British points genuinely fall inside
+/// the Dutch range, so even a pure column has a minority preferring a neighbour.
+pub const DOMINANT: f64 = 0.80;
+
+/// A system whose narrowest-match share reaches this is listed as a component
+/// of a mixture rather than treated as noise.
+pub const MIXTURE_MIN: f64 = 0.05;
+
+/// Coordinates this close to (0, 0) are treated as Null Island sentinels.
+/// An exact comparison lets denormals and the residue of float arithmetic slip
+/// through, and nothing real is measured to this precision.
+pub const ZERO_EPS: f64 = 1e-9;
 
 /// Per-column statistics.
 pub struct Stats {
@@ -57,7 +69,7 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
         if a.is_nan() || b.is_nan() {
             continue;
         }
-        if a == 0.0 && b == 0.0 {
+        if a.abs() < ZERO_EPS && b.abs() < ZERO_EPS {
             sentinels += 1;
             continue;
         }
@@ -104,30 +116,42 @@ fn axes_reversed(st: &Stats) -> bool {
     st.swapped >= MATCH_THRESHOLD && st.contains[WGS84] < MATCH_THRESHOLD
 }
 
-/// Systems that together account for the column when no single one does.
-///
-/// A broad range can contain two disjoint groups of coordinates and score 1.00
-/// while each real system scores only its own share and fails the threshold.
-/// Reporting the broad range as the answer names a system that is not present
-/// in the data at all, so detect that case and report the components instead.
-///
-/// Returns None unless at least two systems narrower than `winner` each hold a
-/// meaningful share of the narrowest matches AND together account for the
-/// column.
-fn mixture(st: &Stats, winner: usize) -> Option<Vec<&'static str>> {
-    let covered: f64 = st.narrowest[..winner].iter().sum();
-    if covered < MATCH_THRESHOLD {
-        return None;
-    }
-    let parts: Vec<&'static str> = (0..winner)
-        .filter(|i| st.narrowest[*i] >= MIXTURE_MIN)
-        .map(|i| CRS_DEFS[i].code)
-        .collect();
-    (parts.len() >= 2).then_some(parts)
+/// Index of the system that is the narrowest match for the largest share of
+/// rows. Ties go to the narrower range, which is the earlier entry.
+fn dominant(st: &Stats) -> Option<usize> {
+    st.narrowest
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| **f > 0.0)
+        .max_by(|a, b| {
+            a.1.partial_cmp(b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.0.cmp(&a.0))
+        })
+        .map(|(i, _)| i)
 }
 
-/// The narrowest system meeting the threshold, or a description of the mixture
-/// when several systems together account for the column.
+/// Systems that together account for the column when no single one dominates.
+fn components(st: &Stats) -> Option<Vec<&'static str>> {
+    let parts: Vec<usize> = (0..CRS_DEFS.len())
+        .filter(|i| st.narrowest[*i] >= MIXTURE_MIN)
+        .collect();
+    let covered: f64 = parts.iter().map(|i| st.narrowest[*i]).sum();
+    if parts.len() >= 2 && covered >= DOMINANT {
+        Some(parts.iter().map(|i| CRS_DEFS[*i].code).collect())
+    } else {
+        None
+    }
+}
+
+/// The verdict for a column.
+///
+/// Decided entirely on the narrowest-match shares, which sum to one. Those are
+/// the only exclusive evidence available; how many rows a range merely
+/// *contains* is diagnostic and must never decide the answer. Letting
+/// containment decide is what made a broad range win a column it had no
+/// coordinates in, first for mixed columns and then again inside the band where
+/// no single system reached the threshold.
 pub fn best(st: &Stats) -> String {
     if st.seen == 0 {
         return UNKNOWN.to_string();
@@ -135,16 +159,19 @@ pub fn best(st: &Stats) -> String {
     if axes_reversed(st) {
         return format!("{}:{}", SWAPPED, CRS_DEFS[WGS84].code);
     }
-    match st.contains.iter().position(|f| *f >= MATCH_THRESHOLD) {
+    if let Some(i) = dominant(st) {
+        if st.narrowest[i] >= DOMINANT {
+            return CRS_DEFS[i].code.to_string();
+        }
+    }
+    match components(st) {
+        Some(parts) => format!("{}:{}", MIXED, parts.join("|")),
         None => UNKNOWN.to_string(),
-        Some(w) => match mixture(st, w) {
-            Some(parts) => format!("{}:{}", MIXED, parts.join("|")),
-            None => CRS_DEFS[w].code.to_string(),
-        },
     }
 }
 
-/// Every system meeting the threshold, pipe-joined.
+/// Like [`best`], but a single system is reported alongside anything else that
+/// is the narrowest match for a meaningful share.
 pub fn surviving(st: &Stats) -> String {
     if st.seen == 0 {
         return UNKNOWN.to_string();
@@ -152,32 +179,31 @@ pub fn surviving(st: &Stats) -> String {
     if axes_reversed(st) {
         return format!("{}:{}", SWAPPED, CRS_DEFS[WGS84].code);
     }
-    if let Some(w) = st.contains.iter().position(|f| *f >= MATCH_THRESHOLD) {
-        if let Some(parts) = mixture(st, w) {
-            return format!("{}:{}", MIXED, parts.join("|"));
-        }
-    }
-    let survivors: Vec<&str> = st
-        .contains
-        .iter()
-        .enumerate()
-        .filter(|(_, f)| **f >= MATCH_THRESHOLD)
-        .map(|(i, _)| CRS_DEFS[i].code)
+    let parts: Vec<&str> = (0..CRS_DEFS.len())
+        .filter(|i| st.narrowest[*i] >= MIXTURE_MIN)
+        .map(|i| CRS_DEFS[i].code)
         .collect();
-
-    if survivors.is_empty() {
+    if parts.is_empty() {
         UNKNOWN.to_string()
     } else {
-        survivors.join("|")
+        parts.join("|")
     }
 }
 
-/// Per-system detail: `contains` is the fraction of rows inside each range,
-/// `narrowest` the fraction for which it is the most specific match. Two
-/// systems at roughly 0.50 narrowest is the signature of a mixed column.
+/// Per-system detail: `narrowest/contains`.
+///
+/// `narrowest` is the share of rows for which the system is the most specific
+/// match, and these sum to one. `contains` is the share merely inside its
+/// range; ranges overlap, so these do not. A system reading `0.00/1.00`
+/// contains every row and is preferred by none, which means its range is
+/// swallowing the real answer.
 pub fn report(st: &Stats) -> String {
     if st.seen == 0 {
-        return UNKNOWN.to_string();
+        return if st.sentinels > 0 {
+            format!("{}|null-island={}/{}", UNKNOWN, st.sentinels, st.sentinels)
+        } else {
+            UNKNOWN.to_string()
+        };
     }
     let mut parts: Vec<(usize, f64, f64)> = (0..CRS_DEFS.len())
         .map(|i| (i, st.contains[i], st.narrowest[i]))
@@ -200,7 +226,11 @@ pub fn report(st: &Stats) -> String {
         out.push(format!("{}={:.2}", SWAPPED, st.swapped));
     }
     if st.sentinels > 0 {
-        out.push(format!("null-island-rows={}", st.sentinels));
+        out.push(format!(
+            "null-island={}/{}",
+            st.sentinels,
+            st.sentinels + st.seen
+        ));
     }
     out.join("|")
 }
