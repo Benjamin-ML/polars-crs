@@ -1,0 +1,15 @@
+*.so
+*.pyc
+target
+venv
+.venv
+*.so
+*.dll
+*.pyd
+
+
+# generated benchmark data - regenerate with `python gendata.py N`
+data/bench_*.parquet
+__pycache__/
+.pytest_cache/
+*.egg-info/
