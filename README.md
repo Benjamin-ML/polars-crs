@@ -108,16 +108,10 @@ build, Apple Silicon with 10 cores:
 | `map_elements` | 0.418 s | (too slow) |
 | pure Python loop | 0.241 s | (too slow) |
 
-The comparison that matters is the native `when/then` chain, since a range
-check is expressible as one without any Rust. `map_elements` and the pure
-Python loop are there for scale, not as serious alternatives.
+Elementwise work is split across cores, so throughput scales with the machine
+rather than with a single thread.
 
-Elementwise work is split across cores by `src/parallel.rs`. A plugin receives
-the whole column in a single call and runs on one thread unless it arranges
-otherwise, while native Polars expressions are parallel by default. Without
-that split this plugin was 6x slower than native rather than 2x faster.
-
-Beyond speed, the plugin carries:
+Beyond speed:
 
 - **Correct bounds**, derived from PROJ areas of use and validated against
   ground truth. This is the part that is actually hard, and that a hand-rolled

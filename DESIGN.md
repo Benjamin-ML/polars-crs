@@ -57,11 +57,9 @@ Nothing in the per-row path allocates. Matches are a `u8` bitmask rather than a
 sixteen possible candidate strings are rendered once on first use rather than
 formatted per row.
 
-Elementwise work is split across cores in `src/parallel.rs`. A plugin is handed
-the whole column in one call and runs single-threaded unless it arranges
-otherwise, while native Polars expressions are parallel by default; that
-difference, not the per-row work, was the dominant cost. Below 100,000 rows the
-split is skipped, since thread setup costs more than it saves.
+Elementwise work is split across cores in `src/parallel.rs`, so throughput
+scales with the machine. Below 100,000 rows the split is skipped, since thread
+setup costs more than it saves.
 
 ## Out of scope
 
