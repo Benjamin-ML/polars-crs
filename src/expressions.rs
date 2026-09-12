@@ -9,6 +9,7 @@ use pyo3_polars::derive::polars_expr;
 
 use crate::crs::{first_match, mask_labels, match_mask, CRS_DEFS, RD_NEW, UNKNOWN};
 use crate::detect::{best, match_fractions, report, surviving};
+use crate::parallel::par_map_str;
 
 /// Both coordinate columns must be Float64. Integer grid references are common
 /// in the wild, so say what to do rather than just failing.
@@ -55,15 +56,7 @@ fn is_rd_new(inputs: &[Series]) -> PolarsResult<Series> {
 fn guess(inputs: &[Series]) -> PolarsResult<Series> {
     let (x, y) = coord_pair(inputs)?;
 
-    let out: StringChunked = x
-        .into_iter()
-        .zip(y.into_iter())
-        .map(|(a, b)| match (a, b) {
-            (Some(a), Some(b)) => Some(first_match(a, b).unwrap_or(UNKNOWN)),
-            _ => None,
-        })
-        .collect_ca(PlSmallStr::from_static("guess"));
-
+    let out = par_map_str(x, y, "guess", |a, b| first_match(a, b).unwrap_or(UNKNOWN));
     Ok(out.into_series())
 }
 
@@ -72,15 +65,9 @@ fn candidates(inputs: &[Series]) -> PolarsResult<Series> {
     let (x, y) = coord_pair(inputs)?;
     let labels = mask_labels();
 
-    let out: StringChunked = x
-        .into_iter()
-        .zip(y.into_iter())
-        .map(|(a, b)| match (a, b) {
-            (Some(a), Some(b)) => Some(labels[match_mask(a, b) as usize].as_str()),
-            _ => None,
-        })
-        .collect_ca(PlSmallStr::from_static("candidates"));
-
+    let out = par_map_str(x, y, "candidates", |a, b| {
+        labels[match_mask(a, b) as usize].as_str()
+    });
     Ok(out.into_series())
 }
 

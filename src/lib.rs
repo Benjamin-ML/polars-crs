@@ -1,6 +1,7 @@
 mod crs;
 mod detect;
 mod expressions;
+mod parallel;
 use pyo3::prelude::*;
 use pyo3_polars::PolarsAllocator;
 

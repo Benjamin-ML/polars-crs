@@ -57,8 +57,11 @@ Nothing in the per-row path allocates. Matches are a `u8` bitmask rather than a
 sixteen possible candidate strings are rendered once on first use rather than
 formatted per row.
 
-The remaining cost is building the output `String` column, which dominates the
-runtime. An integer or categorical output would be materially faster.
+Elementwise work is split across cores in `src/parallel.rs`. A plugin is handed
+the whole column in one call and runs single-threaded unless it arranges
+otherwise, while native Polars expressions are parallel by default; that
+difference, not the per-row work, was the dominant cost. Below 100,000 rows the
+split is skipped, since thread setup costs more than it saves.
 
 ## Out of scope
 

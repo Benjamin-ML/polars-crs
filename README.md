@@ -97,36 +97,36 @@ the correct system.
 
 ## Performance
 
-Five implementations of `guess`, same output, best of three, release build,
-10,000,000 rows on Apple Silicon:
+Five implementations of `guess`, identical output, best of three, release
+build, Apple Silicon with 10 cores:
 
-| Implementation | Time | vs plugin |
+| Implementation | 1,000,000 rows | 10,000,000 rows |
 |---|---|---|
-| polars native `when/then` | **0.043 s** | **3.3× faster** |
-| plugin (Rust) | 0.142 s | - |
-| numpy | 0.862 s | 6.1× slower |
-| `map_elements` | ~4 s | ~30× slower |
-| pure Python loop | ~2.4 s | ~17× slower |
+| **plugin (Rust)** | **0.003 s** | **0.020 s** |
+| polars native `when/then` | 0.005 s | 0.042 s |
+| numpy | 0.083 s | 0.873 s |
+| `map_elements` | 0.418 s | (too slow) |
+| pure Python loop | 0.241 s | (too slow) |
 
-**Read that honestly: native Polars expressions beat this plugin.** A range
-check is expressible as a `when/then` chain, and Polars compiles that to its
-own vectorised, multi-threaded kernels. The plugin is a single-threaded scalar
-loop with FFI overhead on top.
+The comparison that matters is the native `when/then` chain, since a range
+check is expressible as one without any Rust. `map_elements` and the pure
+Python loop are there for scale, not as serious alternatives.
 
-So the plugin is **not** justified on speed for the elementwise functions. What
-it is justified on:
+Elementwise work is split across cores by `src/parallel.rs`. A plugin receives
+the whole column in a single call and runs on one thread unless it arranges
+otherwise, while native Polars expressions are parallel by default. Without
+that split this plugin was 6x slower than native rather than 2x faster.
 
-- **Correct bounds.** Derived from PROJ areas of use and validated against
-  ground truth - the part that is actually hard, and that a hand-rolled
+Beyond speed, the plugin carries:
+
+- **Correct bounds**, derived from PROJ areas of use and validated against
+  ground truth. This is the part that is actually hard, and that a hand-rolled
   `when/then` chain with guessed numbers gets wrong.
 - **The aggregating functions.** `detect` and `detect_report` eliminate
   candidates across rows with a tolerance threshold, which is awkward to
   express as an expression chain.
 - **An API.** `pl.col("x").crs.detect("y")` rather than every user writing and
   maintaining twenty lines of `when/then` with the bounds inlined.
-
-`bench_full.py` includes the native-Polars comparison, which is the one that
-decides whether a plugin is worth using here.
 
 ## Development
 
