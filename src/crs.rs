@@ -64,6 +64,12 @@ pub const UNKNOWN: &str = "unknown";
 /// Prefix for a column holding coordinates from more than one system.
 pub const MIXED: &str = "mixed";
 
+/// Prefix for a column whose x and y are the wrong way round.
+pub const SWAPPED: &str = "swapped";
+
+/// Index of the WGS84 entry in [`CRS_DEFS`].
+pub const WGS84: usize = 0;
+
 /// Index of the Dutch RD New entry in [`CRS_DEFS`].
 pub const RD_NEW: usize = 1;
 

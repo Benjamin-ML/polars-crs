@@ -6,7 +6,7 @@
 
 use polars::prelude::*;
 
-use crate::crs::{match_mask, CRS_DEFS, MIXED, UNKNOWN};
+use crate::crs::{match_mask, CRS_DEFS, MIXED, SWAPPED, UNKNOWN, WGS84};
 
 /// A system must contain at least this fraction of the rows to stay a
 /// candidate.
@@ -29,21 +29,36 @@ pub struct Stats {
     /// sum to 1 (less any rows matching nothing), and are what distinguishes a
     /// mixture from a single system.
     pub narrowest: Vec<f64>,
-    /// Rows counted, excluding nulls and NaNs.
+    /// Fraction of rows that would fit WGS84 if x and y were exchanged. A high
+    /// value with a low `contains[WGS84]` means the axes are reversed.
+    pub swapped: f64,
+    /// Rows counted, excluding nulls, NaNs and Null Island sentinels.
     pub seen: usize,
+    /// Rows dropped as exact (0, 0).
+    pub sentinels: usize,
 }
 
 /// Nulls and NaNs are skipped rather than counted as misses: absent data is not
 /// evidence against a system.
+///
+/// Exact (0, 0) is skipped too. Null Island is open ocean, so a zero pair is
+/// almost always a missing value encoded as a number. Counting it would let a
+/// column of missing data read as confident WGS84.
 pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
     let n = CRS_DEFS.len();
     let mut contains = vec![0usize; n];
     let mut narrowest = vec![0usize; n];
+    let mut swapped = 0usize;
     let mut seen = 0usize;
+    let mut sentinels = 0usize;
 
     for (a, b) in x.into_iter().zip(y.into_iter()) {
         let (Some(a), Some(b)) = (a, b) else { continue };
         if a.is_nan() || b.is_nan() {
+            continue;
+        }
+        if a == 0.0 && b == 0.0 {
+            sentinels += 1;
             continue;
         }
         seen += 1;
@@ -56,20 +71,37 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
         if mask != 0 {
             narrowest[mask.trailing_zeros() as usize] += 1;
         }
+        if CRS_DEFS[WGS84].contains(b, a) {
+            swapped += 1;
+        }
     }
 
     if seen == 0 {
         return Stats {
             contains: vec![0.0; n],
             narrowest: vec![0.0; n],
+            swapped: 0.0,
             seen: 0,
+            sentinels,
         };
     }
     Stats {
         contains: contains.iter().map(|c| *c as f64 / seen as f64).collect(),
         narrowest: narrowest.iter().map(|c| *c as f64 / seen as f64).collect(),
+        swapped: swapped as f64 / seen as f64,
         seen,
+        sentinels,
     }
+}
+
+/// True when the column is WGS84 with x and y exchanged.
+///
+/// Only detectable when some row carries a longitude beyond +/-90, which cannot
+/// be a latitude. A dataset confined to low latitudes and longitudes, the
+/// Netherlands for instance, fits WGS84 either way round and no test on the
+/// values can separate the two.
+fn axes_reversed(st: &Stats) -> bool {
+    st.swapped >= MATCH_THRESHOLD && st.contains[WGS84] < MATCH_THRESHOLD
 }
 
 /// Systems that together account for the column when no single one does.
@@ -100,6 +132,9 @@ pub fn best(st: &Stats) -> String {
     if st.seen == 0 {
         return UNKNOWN.to_string();
     }
+    if axes_reversed(st) {
+        return format!("{}:{}", SWAPPED, CRS_DEFS[WGS84].code);
+    }
     match st.contains.iter().position(|f| *f >= MATCH_THRESHOLD) {
         None => UNKNOWN.to_string(),
         Some(w) => match mixture(st, w) {
@@ -113,6 +148,9 @@ pub fn best(st: &Stats) -> String {
 pub fn surviving(st: &Stats) -> String {
     if st.seen == 0 {
         return UNKNOWN.to_string();
+    }
+    if axes_reversed(st) {
+        return format!("{}:{}", SWAPPED, CRS_DEFS[WGS84].code);
     }
     if let Some(w) = st.contains.iter().position(|f| *f >= MATCH_THRESHOLD) {
         if let Some(parts) = mixture(st, w) {
@@ -152,12 +190,17 @@ pub fn report(st: &Stats) -> String {
     });
 
     if parts.is_empty() {
-        UNKNOWN.to_string()
-    } else {
-        parts
-            .iter()
-            .map(|(i, c, nrw)| format!("{}={:.2}/{:.2}", CRS_DEFS[*i].code, *nrw, *c))
-            .collect::<Vec<_>>()
-            .join("|")
+        return UNKNOWN.to_string();
     }
+    let mut out: Vec<String> = parts
+        .iter()
+        .map(|(i, c, nrw)| format!("{}={:.2}/{:.2}", CRS_DEFS[*i].code, *nrw, *c))
+        .collect();
+    if axes_reversed(st) {
+        out.push(format!("{}={:.2}", SWAPPED, st.swapped));
+    }
+    if st.sentinels > 0 {
+        out.push(format!("null-island-rows={}", st.sentinels));
+    }
+    out.join("|")
 }

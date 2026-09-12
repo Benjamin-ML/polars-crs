@@ -77,6 +77,21 @@ Elementwise work is split across cores in `src/parallel.rs`, so throughput
 scales with the machine. Below 100,000 rows the split is skipped, since thread
 setup costs more than it saves.
 
+## Axis order and sentinels
+
+Two defects are common enough in real files to be worth handling rather than
+only documenting.
+
+**Swapped axes.** Detected by testing whether the column would fit WGS84 with x
+and y exchanged while it does not fit as given. That only separates the two
+where some row carries a longitude beyond +/-90, since anything inside the
+latitude range is a valid coordinate either way round.
+
+**Null Island.** Exact (0, 0) is dropped before scoring. It is open ocean, so it
+is almost always a missing value encoded as a number, and counting it lets a
+column of missing data read as confident WGS84. Dropped rows are counted and
+reported rather than silently discarded.
+
 ## Out of scope
 
 - **Reprojection.** Datum shifts and OSTN grids are pyproj's job.

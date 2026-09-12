@@ -37,7 +37,7 @@ Wheels are published for Linux (x86_64, aarch64), Windows (x64) and macOS
 | `detect_candidates(x, y)` | aggregation | Every system still consistent with all rows |
 | `guess(x, y)` | elementwise | Narrowest matching system, per row |
 | `candidates(x, y)` | elementwise | All matching systems, pipe-joined, per row |
-| `detect_report(x, y)` | aggregation | `CODE=narrowest/contains` per system, e.g. `EPSG:28992=1.00/1.00\|EPSG:3857=0.00/1.00` |
+| `detect_report(x, y)` | aggregation | Per-system detail, see [Reading the report](#reading-the-report) |
 | `is_rd_new(x, y)` | elementwise | Boolean, EPSG:28992 only |
 
 All are also available as an expression namespace: `pl.col("x").crs.detect("y")`.
@@ -103,10 +103,9 @@ the correct system.
    recognised.
 6. **No reprojection.** Converting between systems needs datum shifts and OSTN
    grids - that is pyproj's job and it does it properly.
-7. **Swapped axes are invisible.** `lon,lat` and `lat,lon` both sit inside the
-   EPSG:4326 box, so a reversed pair is still a valid coordinate and the values
-   alone cannot reveal it. This is one of the most common defects in geospatial
-   CSVs and this tool will not catch it.
+7. **Swapped axes are only caught outside +/-90.** A reversed pair is detected
+   when some row carries a longitude beyond the latitude range. Within it, both
+   orders are valid WGS84 coordinates and the values cannot distinguish them.
 8. **Wheels do not cover every platform.** Intel macOS and musl-based images
    such as Alpine fall back to building the sdist, which needs a Rust toolchain.
 

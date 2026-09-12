@@ -251,19 +251,57 @@ def test_report_exposes_the_split():
 # --- limitations that range checks cannot see --------------------------------
 
 
-def test_swapped_axes_are_invisible():
-    """lon,lat and lat,lon both sit inside the EPSG:4326 box.
+LON = [4.9, -0.13, -74.0, 151.2, -122.4, 139.7]
+LAT = [52.4, 51.5, 40.7, -33.9, 37.8, 35.7]
 
-    Documented limitation. For most of the world a swapped pair is still a
-    valid coordinate, so the values alone cannot reveal it.
-    """
-    normal = pl.DataFrame({"x": [4.9041], "y": [52.3676]})
-    swapped = pl.DataFrame({"x": [52.3676], "y": [4.9041]})
+
+def test_swapped_axes_are_detected_when_longitude_exceeds_90():
+    """A longitude beyond +/-90 cannot be a latitude, which gives it away."""
+    normal = pl.DataFrame({"x": LON, "y": LAT})
+    swapped = pl.DataFrame({"x": LAT, "y": LON})
     assert normal.select(plc.detect("x", "y")).item() == "EPSG:4326"
+    assert swapped.select(plc.detect("x", "y")).item() == "swapped:EPSG:4326"
+
+
+def test_swapped_axes_are_invisible_within_90_degrees():
+    """Documented limitation.
+
+    Dutch coordinates sit under 90 in both directions, so the pair is a valid
+    WGS84 coordinate either way round and no test on the values separates them.
+    """
+    lon = [r[1] for r in WGS84 if abs(r[1]) <= 90 and abs(r[2]) <= 90]
+    lat = [r[2] for r in WGS84 if abs(r[1]) <= 90 and abs(r[2]) <= 90]
+    swapped = pl.DataFrame({"x": lat, "y": lon})
     assert swapped.select(plc.detect("x", "y")).item() == "EPSG:4326"
 
 
-def test_all_zeros_reads_as_null_island():
-    """Zero-encoded missing data is a valid coordinate. Strip it first."""
+def test_swap_detection_does_not_fire_on_projected_data():
+    for rows in (RD_NEW, BNG, WEB_MERCATOR):
+        got = _frame(rows).select(plc.detect("x", "y")).item()
+        assert not got.startswith("swapped:"), rows
+
+
+def test_all_zeros_is_unknown_not_null_island():
+    """Exact (0, 0) is dropped before scoring.
+
+    Null Island is open ocean, so a zero pair is almost always missing data
+    encoded as a number. A column of them has nothing to detect.
+    """
     df = pl.DataFrame({"x": [0.0] * 5, "y": [0.0] * 5})
-    assert df.select(plc.detect("x", "y")).item() == "EPSG:4326"
+    assert df.select(plc.detect("x", "y")).item() == "unknown"
+
+
+def test_null_island_rows_are_reported_not_hidden():
+    xs = [r[1] for r in RD_NEW] + [0.0, 0.0]
+    ys = [r[2] for r in RD_NEW] + [0.0, 0.0]
+    df = pl.DataFrame({"x": xs, "y": ys})
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+    assert "null-island-rows=2" in df.select(plc.detect_report("x", "y")).item()
+
+
+def test_zero_pairs_do_not_dilute_the_verdict():
+    """Without the sentinel drop, enough zeros would pull the column to 4326."""
+    xs = [r[1] for r in RD_NEW] + [0.0] * 20
+    ys = [r[2] for r in RD_NEW] + [0.0] * 20
+    df = pl.DataFrame({"x": xs, "y": ys})
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
