@@ -61,6 +61,9 @@ pub const CRS_DEFS: &[Crs] = &[
 
 pub const UNKNOWN: &str = "unknown";
 
+/// Prefix for a column holding coordinates from more than one system.
+pub const MIXED: &str = "mixed";
+
 /// Index of the Dutch RD New entry in [`CRS_DEFS`].
 pub const RD_NEW: usize = 1;
 

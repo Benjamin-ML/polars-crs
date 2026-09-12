@@ -50,6 +50,22 @@ every row to match would let one bad row discard the correct answer.
 `detect_report` exposes the match fractions so callers can see how firm the
 verdict is.
 
+## Mixtures
+
+Counting only how many rows each range contains is not enough. A broad range
+contains every group in a mixed column and scores 1.00, while each real system
+scores its own share and falls below the threshold, so the broad one wins and
+names a system that is not present.
+
+Each row's *narrowest* match is therefore tracked separately. Those shares do
+sum to one, and a mixture shows up as two or more narrower systems each holding
+a meaningful share while a broad one is narrowest for nothing.
+
+Overlap is not a mixture. Some British points fall inside the Dutch range, so
+pure EPSG:27700 data has a genuine minority narrowest elsewhere. Requiring two
+components above `MIXTURE_MIN` that together reach the threshold separates the
+two cases.
+
 ## Performance
 
 Nothing in the per-row path allocates. Matches are a `u8` bitmask rather than a

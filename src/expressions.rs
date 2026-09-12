@@ -76,20 +76,20 @@ fn candidates(inputs: &[Series]) -> PolarsResult<Series> {
 #[polars_expr(output_type=String)]
 fn detect(inputs: &[Series]) -> PolarsResult<Series> {
     let (x, y) = coord_pair(inputs)?;
-    let (fracs, seen) = match_fractions(x, y);
-    Ok(scalar_string("detect", best(&fracs, seen)))
+    let st = match_fractions(x, y);
+    Ok(scalar_string("detect", best(&st)))
 }
 
 #[polars_expr(output_type=String)]
 fn detect_candidates(inputs: &[Series]) -> PolarsResult<Series> {
     let (x, y) = coord_pair(inputs)?;
-    let (fracs, seen) = match_fractions(x, y);
-    Ok(scalar_string("detect_candidates", surviving(&fracs, seen)))
+    let st = match_fractions(x, y);
+    Ok(scalar_string("detect_candidates", surviving(&st)))
 }
 
 #[polars_expr(output_type=String)]
 fn detect_report(inputs: &[Series]) -> PolarsResult<Series> {
     let (x, y) = coord_pair(inputs)?;
-    let (fracs, seen) = match_fractions(x, y);
-    Ok(scalar_string("detect_report", report(&fracs, seen)))
+    let st = match_fractions(x, y);
+    Ok(scalar_string("detect_report", report(&st)))
 }

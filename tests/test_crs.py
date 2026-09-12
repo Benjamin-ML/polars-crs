@@ -176,3 +176,94 @@ def test_detect_report_shows_confidence():
     df = pl.DataFrame({"x": [121000.0] * 50, "y": [487000.0] * 50})
     got = df.select(plc.detect_report("x", "y")).item()
     assert "EPSG:28992=1.00" in got
+
+
+# --- mixed columns -----------------------------------------------------------
+
+
+def _mix(a, b):
+    return pl.DataFrame(
+        {
+            "x": [r[1] for r in a] + [r[1] for r in b],
+            "y": [r[2] for r in a] + [r[2] for r in b],
+        }
+    )
+
+
+def test_mixed_column_is_not_reported_as_a_third_system():
+    """A broad range contains both groups and would otherwise win outright.
+
+    EPSG:27700 spans both the Dutch RD values and the WGS84 values, so it
+    scores 1.00 while each real system scores 0.50 and fails the threshold.
+    Reporting 27700 would name a system with no coordinates in the data.
+    """
+    got = _mix(RD_NEW, WGS84).select(plc.detect("x", "y")).item()
+    assert got.startswith("mixed:")
+    assert "EPSG:28992" in got and "EPSG:4326" in got
+    assert "EPSG:27700" not in got
+
+
+def test_mixed_column_detect_candidates_agrees():
+    got = _mix(RD_NEW, WGS84).select(plc.detect_candidates("x", "y")).item()
+    assert got.startswith("mixed:")
+
+
+@pytest.mark.parametrize(
+    "rows,expected",
+    [
+        (WGS84, "EPSG:4326"),
+        (WEB_MERCATOR, "EPSG:3857"),
+        (RD_NEW, "EPSG:28992"),
+        (BNG, "EPSG:27700"),
+    ],
+)
+def test_pure_columns_are_never_called_mixed(rows, expected):
+    """Overlapping ranges must not be mistaken for a mixture.
+
+    Some British points fall inside the Dutch RD range, so BNG data has a
+    genuine minority narrowest-match elsewhere. That is overlap, not a mixture.
+    """
+    got = _frame(rows).select(plc.detect("x", "y")).item()
+    assert got == expected
+
+
+def test_small_contamination_does_not_flip_the_verdict():
+    xs = [r[1] for r in RD_NEW] * 19 + [WGS84[0][1]]
+    ys = [r[2] for r in RD_NEW] * 19 + [WGS84[0][2]]
+    df = pl.DataFrame({"x": xs, "y": ys})
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+
+
+def test_report_exposes_the_split():
+    got = _mix(RD_NEW, WGS84).select(plc.detect_report("x", "y")).item()
+    # Format is CODE=narrowest/contains. The mixture signature is two systems
+    # holding a substantial narrowest share each, while a broad range contains
+    # everything but is narrowest for nothing.
+    parts = {
+        p.split("=")[0]: tuple(float(v) for v in p.split("=")[1].split("/"))
+        for p in got.split("|")
+    }
+    assert 0.2 < parts["EPSG:4326"][0] < 0.8
+    assert 0.2 < parts["EPSG:28992"][0] < 0.8
+    assert parts["EPSG:27700"] == (0.0, 1.0)
+
+
+# --- limitations that range checks cannot see --------------------------------
+
+
+def test_swapped_axes_are_invisible():
+    """lon,lat and lat,lon both sit inside the EPSG:4326 box.
+
+    Documented limitation. For most of the world a swapped pair is still a
+    valid coordinate, so the values alone cannot reveal it.
+    """
+    normal = pl.DataFrame({"x": [4.9041], "y": [52.3676]})
+    swapped = pl.DataFrame({"x": [52.3676], "y": [4.9041]})
+    assert normal.select(plc.detect("x", "y")).item() == "EPSG:4326"
+    assert swapped.select(plc.detect("x", "y")).item() == "EPSG:4326"
+
+
+def test_all_zeros_reads_as_null_island():
+    """Zero-encoded missing data is a valid coordinate. Strip it first."""
+    df = pl.DataFrame({"x": [0.0] * 5, "y": [0.0] * 5})
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:4326"
