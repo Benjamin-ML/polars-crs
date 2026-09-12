@@ -25,9 +25,14 @@ if TYPE_CHECKING:
 LIB = Path(__file__).parent
 
 __all__ = [
-    "is_rd_new", "candidates", "guess",
-    "detect", "detect_candidates", "detect_report",
-    "CRS_RANGES", "MATCH_THRESHOLD",
+    "CRS_RANGES",
+    "MATCH_THRESHOLD",
+    "candidates",
+    "detect",
+    "detect_candidates",
+    "detect_report",
+    "guess",
+    "is_rd_new",
 ]
 
 #: A system must contain at least this fraction of rows to stay a candidate.
@@ -37,9 +42,21 @@ MATCH_THRESHOLD = 0.95
 #: src/expressions.rs - keep the two in sync.
 CRS_RANGES = {
     "EPSG:4326": {"name": "WGS84 lon/lat", "x": (-180.0, 180.0), "y": (-90.0, 90.0)},
-    "EPSG:28992": {"name": "Dutch RD New", "x": (-1000.0, 290000.0), "y": (300000.0, 640000.0)},
-    "EPSG:27700": {"name": "British National Grid", "x": (-110000.0, 690000.0), "y": (-20000.0, 1260000.0)},
-    "EPSG:3857": {"name": "Web Mercator", "x": (-20037508.34, 20037508.34), "y": (-20048966.10, 20048966.10)},
+    "EPSG:28992": {
+        "name": "Dutch RD New",
+        "x": (-1000.0, 290000.0),
+        "y": (300000.0, 640000.0),
+    },
+    "EPSG:27700": {
+        "name": "British National Grid",
+        "x": (-110000.0, 690000.0),
+        "y": (-20000.0, 1260000.0),
+    },
+    "EPSG:3857": {
+        "name": "Web Mercator",
+        "x": (-20037508.34, 20037508.34),
+        "y": (-20048966.10, 20048966.10),
+    },
 }
 
 
@@ -52,7 +69,13 @@ def _f64(e: IntoExprColumn) -> pl.Expr:
     rather than making every caller write .cast() themselves. The Rust side
     still rejects non-Float64 input as a backstop.
     """
-    return (pl.col(e) if isinstance(e, str) else pl.lit(e) if not isinstance(e, pl.Expr) else e).cast(pl.Float64)
+    return (
+        pl.col(e)
+        if isinstance(e, str)
+        else pl.lit(e)
+        if not isinstance(e, pl.Expr)
+        else e
+    ).cast(pl.Float64)
 
 
 def is_rd_new(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:

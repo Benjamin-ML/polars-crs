@@ -61,8 +61,8 @@ ALL = WGS84 + WEB_MERCATOR + RD_NEW + BNG
 # confidently picks one of these is lying. Good behaviour: report both, or
 # report the column-level verdict from the majority of rows.
 AMBIGUOUS = [
-    (300000.0, 500000.0),   # valid in both 28992 and 27700
-    (200000.0, 600000.0),   # ditto
+    (300000.0, 500000.0),  # valid in both 28992 and 27700
+    (200000.0, 600000.0),  # ditto
 ]
 
 # --- NONSENSE - should come back "unknown", not a guess ----------------------
@@ -80,5 +80,5 @@ UNKNOWN = [
 SENTINELS_LOOK_LIKE_3857 = [
     (-999.0, -999.0),
     (-9999.0, -9999.0),
-    (0.0, 0.0),          # also valid WGS84 (Null Island)
+    (0.0, 0.0),  # also valid WGS84 (Null Island)
 ]

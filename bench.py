@@ -1,7 +1,9 @@
 """Plugin vs the pure-Python equivalent."""
 import time
+
 import numpy as np
 import polars as pl
+
 import polars_crs as plc
 
 N = 2_000_000

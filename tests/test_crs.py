@@ -2,9 +2,9 @@ import math
 
 import polars as pl
 import pytest
+from fixtures import ALL, AMBIGUOUS, BNG, RD_NEW, UNKNOWN, WEB_MERCATOR, WGS84
 
 import polars_crs as plc
-from fixtures import ALL, AMBIGUOUS, BNG, RD_NEW, UNKNOWN, WEB_MERCATOR, WGS84
 
 
 def _frame(rows):
@@ -12,6 +12,7 @@ def _frame(rows):
 
 
 # --- single-system check ------------------------------------------------------
+
 
 def test_is_rd_new_accepts_dutch_points():
     got = _frame(RD_NEW).select(plc.is_rd_new("x", "y")).to_series().to_list()
@@ -26,6 +27,7 @@ def test_is_rd_new_rejects_other_systems(rows):
 
 # --- per-row detection --------------------------------------------------
 
+
 @pytest.mark.parametrize("name,x,y,expected", ALL)
 def test_guess_matches_expected(name, x, y, expected):
     """Per-row guess picks the narrowest matching range.
@@ -36,25 +38,37 @@ def test_guess_matches_expected(name, x, y, expected):
     point is outside the narrower range.
     """
     got = pl.DataFrame({"x": [x], "y": [y]}).select(plc.guess("x", "y")).item()
-    if expected == "EPSG:27700" and plc.CRS_RANGES["EPSG:28992"]["y"][0] <= y <= plc.CRS_RANGES["EPSG:28992"]["y"][1]:
+    if (
+        expected == "EPSG:27700"
+        and plc.CRS_RANGES["EPSG:28992"]["y"][0]
+        <= y
+        <= plc.CRS_RANGES["EPSG:28992"]["y"][1]
+    ):
         pytest.skip("genuinely ambiguous with EPSG:28992 -- see BUILD_PLAN.md")
     assert got == expected
 
 
 def test_candidates_lists_every_match():
     # Amsterdam in RD New sits inside RD New, BNG and Web Mercator ranges.
-    got = pl.DataFrame({"x": [121000.0], "y": [487000.0]}).select(
-        plc.candidates("x", "y")
-    ).item()
+    got = (
+        pl.DataFrame({"x": [121000.0], "y": [487000.0]})
+        .select(plc.candidates("x", "y"))
+        .item()
+    )
     assert got.split("|") == ["EPSG:28992", "EPSG:27700", "EPSG:3857"]
 
 
 # --- whole-column detection ----------------------------------------
 
+
 @pytest.mark.parametrize(
     "rows,expected",
-    [(WGS84, "EPSG:4326"), (WEB_MERCATOR, "EPSG:3857"),
-     (RD_NEW, "EPSG:28992"), (BNG, "EPSG:27700")],
+    [
+        (WGS84, "EPSG:4326"),
+        (WEB_MERCATOR, "EPSG:3857"),
+        (RD_NEW, "EPSG:28992"),
+        (BNG, "EPSG:27700"),
+    ],
 )
 def test_detect_whole_column(rows, expected):
     assert _frame(rows).select(plc.detect("x", "y")).item() == expected
@@ -77,6 +91,7 @@ def test_mixed_systems_collapse_to_unknown():
 
 
 # --- edge cases --------------------------------------------------------------
+
 
 @pytest.mark.parametrize("x,y", UNKNOWN)
 def test_nonsense_is_unknown_not_a_guess(x, y):
@@ -107,6 +122,7 @@ def test_empty_column_is_unknown():
 
 # --- namespace API -----------------------------------------------------------
 
+
 def test_namespace_matches_plain_functions():
     df = _frame(RD_NEW)
     assert (
@@ -121,6 +137,7 @@ def test_namespace_works_in_with_columns():
 
 
 # --- known limitations, pinned so a change is deliberate ---------------------
+
 
 @pytest.mark.parametrize("x,y", [(-999.0, -999.0), (-9999.0, -9999.0), (0.0, 0.0)])
 def test_sentinels_are_indistinguishable_from_real_coordinates(x, y):
@@ -137,6 +154,7 @@ def test_sentinels_are_indistinguishable_from_real_coordinates(x, y):
 
 
 # --- outlier tolerance -------------------------------------------------------
+
 
 def test_single_outlier_does_not_discard_the_right_answer():
     """Real data has typos. One bad row must not eliminate the correct CRS."""
