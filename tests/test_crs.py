@@ -1,3 +1,4 @@
+import datetime
 import math
 
 import polars as pl
@@ -254,10 +255,13 @@ def test_report_exposes_the_split():
     parts = {
         p.split("=")[0]: tuple(float(v) for v in p.split("=")[1].split("/"))
         for p in got.split("|")
+        if "=" in p and "/" in p
     }
+    # CODE=narrowest/contains/rows
     assert 0.2 < parts["EPSG:4326"][0] < 0.8
     assert 0.2 < parts["EPSG:28992"][0] < 0.8
-    assert parts["EPSG:27700"] == (0.0, 1.0)
+    assert parts["EPSG:27700"][:2] == (0.0, 1.0)
+    assert parts["EPSG:27700"][2] == 0.0
 
 
 # --- limitations that range checks cannot see --------------------------------
@@ -373,3 +377,77 @@ def test_near_zero_counts_as_null_island(tiny):
 def test_report_surfaces_how_much_was_dropped():
     df = _pts([WGS_PT] * 5 + [(0.0, 0.0)] * 95)
     assert "null-island=95/100" in df.select(plc.detect_report("x", "y")).item()
+
+
+# --- input validation --------------------------------------------------------
+
+
+def test_boolean_columns_are_rejected():
+    """True/False cast to 1.0/0.0, which sits inside the lon/lat box."""
+    df = pl.DataFrame({"x": [True, False] * 5, "y": [True, True] * 5})
+    with pytest.raises(Exception, match="numeric coordinates"):
+        df.select(plc.detect("x", "y"))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        datetime.date(2024, 1, 1),
+        datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc),
+        datetime.timedelta(days=1),
+        datetime.time(12, 0),
+    ],
+)
+def test_temporal_columns_are_rejected(value):
+    """Temporal types cast to an epoch offset that lands in a real CRS range."""
+    df = pl.DataFrame({"x": [value] * 5, "y": [value] * 5})
+    with pytest.raises(Exception, match="numeric coordinates"):
+        df.select(plc.detect("x", "y"))
+
+
+@pytest.mark.parametrize(
+    "dtype", [pl.Float32, pl.Float64, pl.Int32, pl.Int64, pl.UInt32, pl.UInt64]
+)
+def test_numeric_dtypes_are_accepted(dtype):
+    df = pl.DataFrame(
+        {
+            "x": pl.Series([121000], dtype=dtype),
+            "y": pl.Series([487000], dtype=dtype),
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+
+
+def test_same_column_for_both_axes_is_rejected():
+    """Always a caller mistake, and cheap to catch."""
+    df = pl.DataFrame({"x": [121000.0, 92000.0]})
+    with pytest.raises(Exception, match="same column"):
+        df.select(plc.detect("x", "x"))
+
+
+# --- report detail -----------------------------------------------------------
+
+
+def test_report_counts_rows_a_fraction_would_round_away():
+    """One stray row in 100000 rounds to 0.00 but must stay countable."""
+    df = pl.DataFrame(
+        {
+            "x": [121000.0] * 99_999 + [4.9],
+            "y": [487000.0] * 99_999 + [52.4],
+        }
+    )
+    got = df.select(plc.detect_report("x", "y")).item()
+    assert "EPSG:4326=0.00/0.00/1" in got
+
+
+def test_unverifiable_axis_order_is_flagged():
+    """Dutch coordinates are valid WGS84 either way round."""
+    df = pl.DataFrame({"x": [4.9041, 5.12], "y": [52.3676, 52.09]})
+    assert "axis-order=unverifiable" in df.select(plc.detect_report("x", "y")).item()
+
+
+def test_verifiable_axis_order_is_not_flagged():
+    """A longitude beyond +/-90 settles the order, so there is nothing to warn about."""
+    df = pl.DataFrame({"x": [4.9, -74.0, 151.2], "y": [52.4, 40.7, -33.9]})
+    got = df.select(plc.detect_report("x", "y")).item()
+    assert "axis-order" not in got and "swapped" not in got

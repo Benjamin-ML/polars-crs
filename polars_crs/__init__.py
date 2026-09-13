@@ -60,28 +60,24 @@ CRS_RANGES = {
 }
 
 
-def _f64(e: IntoExprColumn) -> pl.Expr:
-    """Coerce a column reference to Float64.
+def _col(e: IntoExprColumn) -> pl.Expr:
+    """Normalise a column reference to an expression, without casting.
 
-    Integer grid references are common in the wild -- EPSG:28992 and
-    EPSG:27700 coordinates are routinely stored as whole metres. Casting is
-    lossless for any coordinate (all are far below 2**53), so accept them
-    rather than making every caller write .cast() themselves. The Rust side
-    still rejects non-Float64 input as a backstop.
+    Casting here would hide the input dtype from the Rust side, which needs to
+    reject Booleans and temporal types: those cast to numbers inside the lon/lat
+    range and would otherwise detect as a confident EPSG:4326.
     """
-    return (
-        pl.col(e)
-        if isinstance(e, str)
-        else pl.lit(e)
-        if not isinstance(e, pl.Expr)
-        else e
-    ).cast(pl.Float64)
+    if isinstance(e, str):
+        return pl.col(e)
+    if isinstance(e, pl.Expr):
+        return e
+    return pl.lit(e)
 
 
 def is_rd_new(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:
     """True where the point falls inside the Dutch RD New (EPSG:28992) range."""
     return register_plugin_function(
-        args=[_f64(x), _f64(y)],
+        args=[_col(x), _col(y)],
         plugin_path=LIB,
         function_name="is_rd_new",
         is_elementwise=True,
@@ -95,7 +91,7 @@ def candidates(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:
     Ranges genuinely overlap, so more than one answer is normal and honest.
     """
     return register_plugin_function(
-        args=[_f64(x), _f64(y)],
+        args=[_col(x), _col(y)],
         plugin_path=LIB,
         function_name="candidates",
         is_elementwise=True,
@@ -108,7 +104,7 @@ def guess(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:
     Prefer :func:`candidates` when you need to know an answer was ambiguous.
     """
     return register_plugin_function(
-        args=[_f64(x), _f64(y)],
+        args=[_col(x), _col(y)],
         plugin_path=LIB,
         function_name="guess",
         is_elementwise=True,
@@ -125,7 +121,7 @@ def detect(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:
     Returns a single value, so this is an aggregation, not elementwise.
     """
     return register_plugin_function(
-        args=[_f64(x), _f64(y)],
+        args=[_col(x), _col(y)],
         plugin_path=LIB,
         function_name="detect",
         is_elementwise=False,
@@ -140,7 +136,7 @@ def detect_candidates(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:
     the narrowest one on trust.
     """
     return register_plugin_function(
-        args=[_f64(x), _f64(y)],
+        args=[_col(x), _col(y)],
         plugin_path=LIB,
         function_name="detect_candidates",
         is_elementwise=False,
@@ -154,7 +150,7 @@ def detect_report(x: IntoExprColumn, y: IntoExprColumn) -> pl.Expr:
     Shows how confident the verdict is rather than hiding it.
     """
     return register_plugin_function(
-        args=[_f64(x), _f64(y)],
+        args=[_col(x), _col(y)],
         plugin_path=LIB,
         function_name="detect_report",
         is_elementwise=False,

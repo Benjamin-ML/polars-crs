@@ -46,7 +46,10 @@ pub struct Stats {
     pub swapped: f64,
     /// Rows counted, excluding nulls, NaNs and Null Island sentinels.
     pub seen: usize,
-    /// Rows dropped as exact (0, 0).
+    /// Row count for which each system is the narrowest match. A fraction
+    /// rounds a handful of stray rows to 0.00; the count does not.
+    pub narrowest_n: Vec<usize>,
+    /// Rows dropped as Null Island sentinels.
     pub sentinels: usize,
 }
 
@@ -94,14 +97,19 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
             narrowest: vec![0.0; n],
             swapped: 0.0,
             seen: 0,
+            narrowest_n: vec![0; n],
             sentinels,
         };
     }
     Stats {
         contains: contains.iter().map(|c| *c as f64 / seen as f64).collect(),
-        narrowest: narrowest.iter().map(|c| *c as f64 / seen as f64).collect(),
+        narrowest: narrowest
+            .iter()
+            .map(|c| *c as f64 / seen as f64)
+            .collect::<Vec<f64>>(),
         swapped: swapped as f64 / seen as f64,
         seen,
+        narrowest_n: narrowest,
         sentinels,
     }
 }
@@ -114,6 +122,15 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
 /// values can separate the two.
 fn axes_reversed(st: &Stats) -> bool {
     st.swapped >= MATCH_THRESHOLD && st.contains[WGS84] < MATCH_THRESHOLD
+}
+
+/// True when the column fits WGS84 both as given and with x and y exchanged.
+///
+/// Every value then sits within +/-90, where a coordinate is valid either way
+/// round. Nothing in the numbers can settle the order, so say so rather than
+/// returning EPSG:4326 as though it had been checked.
+fn axis_order_unverifiable(st: &Stats) -> bool {
+    st.contains[WGS84] >= DOMINANT && st.swapped >= DOMINANT
 }
 
 /// Index of the system that is the narrowest match for the largest share of
@@ -220,10 +237,17 @@ pub fn report(st: &Stats) -> String {
     }
     let mut out: Vec<String> = parts
         .iter()
-        .map(|(i, c, nrw)| format!("{}={:.2}/{:.2}", CRS_DEFS[*i].code, *nrw, *c))
+        .map(|(i, c, nrw)| {
+            format!(
+                "{}={:.2}/{:.2}/{}",
+                CRS_DEFS[*i].code, *nrw, *c, st.narrowest_n[*i]
+            )
+        })
         .collect();
     if axes_reversed(st) {
         out.push(format!("{}={:.2}", SWAPPED, st.swapped));
+    } else if axis_order_unverifiable(st) {
+        out.push("axis-order=unverifiable".to_string());
     }
     if st.sentinels > 0 {
         out.push(format!(
