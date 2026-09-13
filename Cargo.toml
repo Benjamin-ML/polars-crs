@@ -1,6 +1,6 @@
 [package]
 name = "polars-crs"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 
 [lib]
@@ -11,7 +11,11 @@ crate-type= ["cdylib"]
 pyo3 = { version = "0.26.0", features = ["extension-module", "abi3-py39"] }
 pyo3-polars = { version = "0.25.0", features = ["derive", "dtype-struct", "dtype-array"] }
 serde = { version = "1", features = ["derive"] }
-polars = { version = "0.52.0", default-features = false }
+# Without these, casting a small integer or a Decimal column panics inside a
+# non-unwinding boundary and aborts the interpreter, which no caller can catch.
+polars = { version = "0.52.0", default-features = false, features = [
+  "dtype-i8", "dtype-i16", "dtype-u8", "dtype-u16", "dtype-decimal",
+] }
 polars-arrow = { version = "0.52.0", default-features = false }
 rayon = "1.12.0"
 

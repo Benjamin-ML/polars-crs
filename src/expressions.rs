@@ -11,25 +11,48 @@ use crate::crs::{first_match, mask_labels, match_mask, CRS_DEFS, RD_NEW, UNKNOWN
 use crate::detect::{best, match_fractions, report, surviving};
 use crate::parallel::par_map_str;
 
+/// True when the two columns are almost certainly the same column passed twice.
+///
+/// Compared on the data, not on the name. Names are unreliable: Polars hands a
+/// plugin unnamed series inside `group_by` and `over`, two different columns can
+/// share an alias, and two literals are both called "literal".
+///
+/// A constant column is exempt. Sentinel data such as a column of (0, 0) or
+/// (-999, -999) genuinely holds the same value on both axes, and rejecting it
+/// would refuse input this tool exists to diagnose. Two real coordinate columns
+/// never agree row-for-row across varying values.
+///
+/// Single pass, stopping at the first difference, so for genuinely different
+/// columns it costs almost nothing.
+fn same_column_twice(x: &Float64Chunked, y: &Float64Chunked) -> bool {
+    if x.len() != y.len() || x.is_empty() {
+        return false;
+    }
+    let first = x.get(0);
+    let mut varies = false;
+    for (a, b) in x.into_iter().zip(y) {
+        if a != b {
+            return false;
+        }
+        if a != first {
+            varies = true;
+        }
+    }
+    varies
+}
+
 /// Validate and coerce the two coordinate columns.
 ///
 /// Anything castable to a float is not automatically a coordinate. Booleans
 /// become 0.0 and 1.0, and temporal types become their epoch offset; both land
 /// inside the lon/lat box and would produce a confident wrong answer from a
 /// column nobody meant as coordinates.
-///
-/// Passing the same column as both axes is always a caller mistake, so reject
-/// that too rather than silently detecting whatever the diagonal falls into.
 fn coord_pair(inputs: &[Series]) -> PolarsResult<(Float64Chunked, Float64Chunked)> {
     if inputs.len() < 2 {
-        polars_bail!(InvalidOperation: "polars-crs needs two coordinate columns, got {}", inputs.len());
-    }
-    if inputs[0].name() == inputs[1].name() {
         polars_bail!(
             InvalidOperation:
-            "polars-crs was given the same column, '{}', as both x and y. \
-             Pass two different columns.",
-            inputs[0].name()
+            "polars-crs needs two coordinate columns, got {}",
+            inputs.len()
         );
     }
 
@@ -37,23 +60,32 @@ fn coord_pair(inputs: &[Series]) -> PolarsResult<(Float64Chunked, Float64Chunked
     for (i, s) in inputs.iter().take(2).enumerate() {
         let dt = s.dtype();
         // is_numeric() is false for Boolean and for every temporal type, which
-        // is exactly the set that casts to a plausible coordinate. It stays true
-        // for Decimal, which is a legitimate way to carry grid references.
-        let numeric = dt.is_numeric();
-
-        if !numeric {
+        // is exactly the set that casts to a plausible coordinate.
+        if !dt.is_numeric() {
             polars_bail!(
                 InvalidOperation:
                 "polars-crs expects numeric coordinates, got {} for argument {}. \
                  Booleans and temporal types cast to numbers that fall inside the \
-                 lon/lat range, so they are rejected rather than silently detected.",
+                 lon/lat range, so they are rejected rather than silently detected. \
+                 Cast explicitly if the values really are coordinates.",
                 dt, i
             );
         }
-        out.push(s.cast(&DataType::Float64)?.f64()?.clone());
+        let cast = s.cast(&DataType::Float64)?;
+        out.push(cast.f64()?.clone());
     }
-    let y = out.pop().unwrap();
-    let x = out.pop().unwrap();
+
+    let y = out.pop().expect("two columns were pushed");
+    let x = out.pop().expect("two columns were pushed");
+
+    // Passing one column as both axes is always a caller mistake.
+    if same_column_twice(&x, &y) {
+        polars_bail!(
+            InvalidOperation:
+            "polars-crs was given the same values as both x and y. \
+             Pass two different coordinate columns."
+        );
+    }
     Ok((x, y))
 }
 

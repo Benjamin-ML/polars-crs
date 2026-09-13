@@ -421,8 +421,18 @@ def test_numeric_dtypes_are_accepted(dtype):
 def test_same_column_for_both_axes_is_rejected():
     """Always a caller mistake, and cheap to catch."""
     df = pl.DataFrame({"x": [121000.0, 92000.0]})
-    with pytest.raises(Exception, match="same column"):
+    with pytest.raises(Exception, match="same values"):
         df.select(plc.detect("x", "x"))
+
+
+@pytest.mark.parametrize("value", [0.0, -999.0, 1e12])
+def test_constant_columns_are_not_mistaken_for_a_duplicate_axis(value):
+    """Sentinel data legitimately holds the same value on both axes.
+
+    Rejecting it would refuse exactly the input this tool exists to diagnose.
+    """
+    df = pl.DataFrame({"x": [value] * 5, "y": [value] * 5})
+    df.select(plc.detect("x", "y"))  # must not raise
 
 
 # --- report detail -----------------------------------------------------------
@@ -451,3 +461,100 @@ def test_verifiable_axis_order_is_not_flagged():
     df = pl.DataFrame({"x": [4.9, -74.0, 151.2], "y": [52.4, 40.7, -33.9]})
     got = df.select(plc.detect_report("x", "y")).item()
     assert "axis-order" not in got and "swapped" not in got
+
+
+# --- regressions from the 0.1.5 input guard ----------------------------------
+
+
+def test_decimal_does_not_abort_the_process():
+    """0.1.5 aborted with SIGABRT here, which no caller could catch.
+
+    polars was built without dtype-decimal, so the cast panicked inside a
+    non-unwinding boundary. The feature is now enabled.
+    """
+    from decimal import Decimal
+
+    df = pl.DataFrame(
+        {
+            "x": pl.Series([Decimal("121000.0000")], dtype=pl.Decimal(18, 4)),
+            "y": pl.Series([Decimal("487000.0000")], dtype=pl.Decimal(18, 4)),
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+        pl.Float32,
+        pl.Float64,
+    ],
+)
+def test_every_integer_width_works(dtype):
+    """Small widths panicked in 0.1.5: polars lacked dtype-i8/i16/u8/u16."""
+    df = pl.DataFrame(
+        {
+            "x": pl.Series([5], dtype=dtype),
+            "y": pl.Series([52], dtype=dtype),
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:4326"
+
+
+def test_group_by_agg_works():
+    """0.1.5 rejected this: Polars hands a plugin unnamed series inside an
+    aggregation, so a name-based duplicate check saw two empty names."""
+    df = pl.DataFrame(
+        {
+            "src": ["nl", "nl", "uk", "uk"],
+            "lon": [121000.0, 92000.0, 530000.0, 325000.0],
+            "lat": [487000.0, 437000.0, 180000.0, 673000.0],
+        }
+    )
+    got = df.group_by("src", maintain_order=True).agg(
+        plc.detect("lon", "lat").alias("crs")
+    )
+    assert got["crs"].to_list() == ["EPSG:28992", "EPSG:27700"]
+
+
+def test_over_works():
+    df = pl.DataFrame(
+        {
+            "src": ["nl", "nl", "uk", "uk"],
+            "lon": [121000.0, 92000.0, 530000.0, 325000.0],
+            "lat": [487000.0, 437000.0, 180000.0, 673000.0],
+        }
+    )
+    got = df.select(plc.detect("lon", "lat").over("src")).to_series().to_list()
+    assert got == ["EPSG:28992", "EPSG:28992", "EPSG:27700", "EPSG:27700"]
+
+
+def test_duplicate_axes_compared_on_data_not_name():
+    """Names are unreliable in both directions, so compare the values."""
+    df = pl.DataFrame({"x": [121000.0, 92000.0], "y": [487000.0, 437000.0]})
+
+    # two different columns sharing an alias must be accepted
+    assert (
+        df.select(plc.detect(pl.col("x").alias("a"), pl.col("y").alias("a"))).item()
+        == "EPSG:28992"
+    )
+
+    # two literals are both named "literal" but hold different values
+    assert (
+        df.select(plc.detect(pl.lit(155000.0), pl.lit(463000.0))).item() == "EPSG:28992"
+    )
+
+    # the same data under a different name must still be rejected
+    with pytest.raises(Exception, match="same values"):
+        df.select(plc.detect("x", pl.col("x").alias("y")))
+
+    with pytest.raises(Exception, match="same values"):
+        df.select(plc.detect("x", "x"))
