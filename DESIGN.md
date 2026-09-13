@@ -84,9 +84,11 @@ Nothing in the per-row path allocates. Matches are a `u8` bitmask rather than a
 sixteen possible candidate strings are rendered once on first use rather than
 formatted per row.
 
-Elementwise work is split across cores in `src/parallel.rs`, so throughput
-scales with the machine. Below 100,000 rows the split is skipped, since thread
-setup costs more than it saves.
+Elementwise work is split across cores in `src/parallel.rs`, and the
+aggregating functions split the same way in `src/detect.rs`. Their accumulators
+are counts, so slices merge by addition and the result is independent of how the
+work was divided. Below 100,000 rows the split is skipped, since thread setup
+costs more than it saves.
 
 ## Axis order and sentinels
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.7
+
+- **The aggregating functions run in parallel.** `detect`, `detect_candidates`
+  and `detect_report` were still single-threaded; only the elementwise
+  functions had been parallelised. On 10,000,000 rows `detect` drops from
+  95 ms to 29 ms.
+
+  The per-row checks added in 0.1.2 and 0.1.3 had cost about 23%, taking
+  `detect` from 77 ms to 95 ms. This more than recovers it. The tallies are
+  counts, so slices merge by addition and the result does not depend on how
+  the work was divided.
+
 ## 0.1.6
 
 Fixes three regressions introduced by the 0.1.5 input guard.

@@ -125,8 +125,9 @@ build, Apple Silicon with 10 cores:
 | `map_elements` | 0.418 s | (too slow) |
 | pure Python loop | 0.241 s | (too slow) |
 
-Elementwise work is split across cores, so throughput scales with the machine
-rather than with a single thread.
+Both the elementwise and the aggregating functions are split across cores, so
+throughput scales with the machine rather than with a single thread. On
+10,000,000 rows, `detect` takes 29 ms.
 
 Beyond speed:
 

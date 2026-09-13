@@ -9,7 +9,7 @@ use polars::prelude::*;
 use rayon::prelude::*;
 
 /// Below this many rows, thread setup costs more than it saves.
-const PARALLEL_THRESHOLD: usize = 100_000;
+pub const PARALLEL_THRESHOLD: usize = 100_000;
 
 /// Map two Float64 columns to a String column, in parallel over slices.
 ///

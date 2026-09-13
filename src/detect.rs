@@ -5,8 +5,10 @@
 //! answer instead of producing more disagreement.
 
 use polars::prelude::*;
+use rayon::prelude::*;
 
 use crate::crs::{match_mask, CRS_DEFS, MIXED, SWAPPED, UNKNOWN, WGS84};
+use crate::parallel::PARALLEL_THRESHOLD;
 
 /// A system must contain at least this fraction of the rows to stay a
 /// candidate.
@@ -53,64 +55,116 @@ pub struct Stats {
     pub sentinels: usize,
 }
 
-/// Nulls and NaNs are skipped rather than counted as misses: absent data is not
-/// evidence against a system.
-///
-/// Exact (0, 0) is skipped too. Null Island is open ocean, so a zero pair is
-/// almost always a missing value encoded as a number. Counting it would let a
-/// column of missing data read as confident WGS84.
-pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
-    let n = CRS_DEFS.len();
-    let mut contains = vec![0usize; n];
-    let mut narrowest = vec![0usize; n];
-    let mut swapped = 0usize;
-    let mut seen = 0usize;
-    let mut sentinels = 0usize;
+/// Raw tallies for a slice of rows. Counts, so slices merge by addition.
+#[derive(Default)]
+struct Tally {
+    contains: Vec<usize>,
+    narrowest: Vec<usize>,
+    swapped: usize,
+    seen: usize,
+    sentinels: usize,
+}
 
-    for (a, b) in x.into_iter().zip(y.into_iter()) {
+impl Tally {
+    fn new() -> Self {
+        Tally {
+            contains: vec![0; CRS_DEFS.len()],
+            narrowest: vec![0; CRS_DEFS.len()],
+            ..Default::default()
+        }
+    }
+
+    fn merge(mut self, other: Tally) -> Self {
+        for (a, b) in self.contains.iter_mut().zip(other.contains) {
+            *a += b;
+        }
+        for (a, b) in self.narrowest.iter_mut().zip(other.narrowest) {
+            *a += b;
+        }
+        self.swapped += other.swapped;
+        self.seen += other.seen;
+        self.sentinels += other.sentinels;
+        self
+    }
+}
+
+fn tally_slice(x: &Float64Chunked, y: &Float64Chunked) -> Tally {
+    let mut t = Tally::new();
+    for (a, b) in x.into_iter().zip(y) {
         let (Some(a), Some(b)) = (a, b) else { continue };
         if a.is_nan() || b.is_nan() {
             continue;
         }
         if a.abs() < ZERO_EPS && b.abs() < ZERO_EPS {
-            sentinels += 1;
+            t.sentinels += 1;
             continue;
         }
-        seen += 1;
+        t.seen += 1;
         let mask = match_mask(a, b);
-        for (i, c) in contains.iter_mut().enumerate() {
+        for (i, c) in t.contains.iter_mut().enumerate() {
             if mask & (1 << i) != 0 {
                 *c += 1;
             }
         }
         if mask != 0 {
-            narrowest[mask.trailing_zeros() as usize] += 1;
+            t.narrowest[mask.trailing_zeros() as usize] += 1;
         }
         if CRS_DEFS[WGS84].contains(b, a) {
-            swapped += 1;
+            t.swapped += 1;
         }
     }
+    t
+}
 
-    if seen == 0 {
+/// Nulls and NaNs are skipped rather than counted as misses: absent data is not
+/// evidence against a system.
+///
+/// Anything within [`ZERO_EPS`] of (0, 0) is skipped too. Null Island is open
+/// ocean, so a zero pair is almost always a missing value encoded as a number.
+/// Counting it would let a column of missing data read as confident WGS84.
+///
+/// Rows are tallied in parallel. The accumulators are counts, so slices merge
+/// by addition and the result does not depend on how the work was divided.
+pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
+    let n = CRS_DEFS.len();
+    let rows = x.len();
+
+    let t = if rows < PARALLEL_THRESHOLD {
+        tally_slice(x, y)
+    } else {
+        let threads = rayon::current_num_threads().max(1);
+        let chunk = rows.div_ceil(threads);
+        (0..threads)
+            .into_par_iter()
+            .map(|i| {
+                let start = i * chunk;
+                if start >= rows {
+                    return Tally::new();
+                }
+                let len = chunk.min(rows - start);
+                tally_slice(&x.slice(start as i64, len), &y.slice(start as i64, len))
+            })
+            .reduce(Tally::new, Tally::merge)
+    };
+
+    if t.seen == 0 {
         return Stats {
             contains: vec![0.0; n],
             narrowest: vec![0.0; n],
             swapped: 0.0,
             seen: 0,
             narrowest_n: vec![0; n],
-            sentinels,
+            sentinels: t.sentinels,
         };
     }
+    let seen = t.seen as f64;
     Stats {
-        contains: contains.iter().map(|c| *c as f64 / seen as f64).collect(),
-        narrowest: narrowest
-            .iter()
-            .map(|c| *c as f64 / seen as f64)
-            .collect::<Vec<f64>>(),
-        swapped: swapped as f64 / seen as f64,
-        seen,
-        narrowest_n: narrowest,
-        sentinels,
+        contains: t.contains.iter().map(|c| *c as f64 / seen).collect(),
+        narrowest: t.narrowest.iter().map(|c| *c as f64 / seen).collect(),
+        swapped: t.swapped as f64 / seen,
+        seen: t.seen,
+        narrowest_n: t.narrowest,
+        sentinels: t.sentinels,
     }
 }
 
