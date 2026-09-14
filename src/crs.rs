@@ -87,6 +87,13 @@ pub fn match_mask(x: f64, y: f64) -> u8 {
     mask
 }
 
+/// Index of the narrowest matching system, or None. Lower is more specific.
+#[inline]
+pub fn narrowest_index(x: f64, y: f64) -> Option<usize> {
+    let mask = match_mask(x, y);
+    (mask != 0).then(|| mask.trailing_zeros() as usize)
+}
+
 /// Narrowest matching system, or None. Borrows a static str -- no allocation.
 #[inline]
 pub fn first_match(x: f64, y: f64) -> Option<&'static str> {

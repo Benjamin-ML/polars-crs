@@ -1,6 +1,7 @@
 import datetime
 import math
 
+import numpy as np
 import polars as pl
 import pytest
 from fixtures import ALL, AMBIGUOUS, BNG, RD_NEW, UNKNOWN, WEB_MERCATOR, WGS84
@@ -178,11 +179,23 @@ def test_single_outlier_does_not_discard_the_right_answer():
 
 
 def test_too_many_outliers_does_reject():
-    """Tolerance is 95%, not unlimited."""
+    """Tolerance is not unlimited.
+
+    Off-diagonal garbage, so it is not mistaken for a repeated placeholder.
+    """
+    xs = [121000.0] * 50 + [9.9e11] * 50
+    ys = [487000.0] * 50 + [8.8e11] * 50
+    df = pl.DataFrame({"x": xs, "y": ys})
+    assert df.select(plc.detect("x", "y")).item() == "unknown"
+
+
+def test_repeated_garbage_point_is_treated_as_a_placeholder():
+    """A single value repeated across half the rows is missing data, not noise."""
     xs = [121000.0] * 50 + [999999999.0] * 50
     ys = [487000.0] * 50 + [999999999.0] * 50
     df = pl.DataFrame({"x": xs, "y": ys})
-    assert df.select(plc.detect("x", "y")).item() == "unknown"
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+    assert "placeholder" in df.select(plc.detect_report("x", "y")).item()
 
 
 def test_detect_report_shows_confidence():
@@ -312,7 +325,7 @@ def test_null_island_rows_are_reported_not_hidden():
     ys = [r[2] for r in RD_NEW] + [0.0, 0.0]
     df = pl.DataFrame({"x": xs, "y": ys})
     assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
-    assert "null-island=2/" in df.select(plc.detect_report("x", "y")).item()
+    assert "placeholder[0]=2/" in df.select(plc.detect_report("x", "y")).item()
 
 
 def test_zero_pairs_do_not_dilute_the_verdict():
@@ -376,7 +389,7 @@ def test_near_zero_counts_as_null_island(tiny):
 
 def test_report_surfaces_how_much_was_dropped():
     df = _pts([WGS_PT] * 5 + [(0.0, 0.0)] * 95)
-    assert "null-island=95/100" in df.select(plc.detect_report("x", "y")).item()
+    assert "placeholder[0]=95/100" in df.select(plc.detect_report("x", "y")).item()
 
 
 # --- input validation --------------------------------------------------------
@@ -558,3 +571,79 @@ def test_duplicate_axes_compared_on_data_not_name():
 
     with pytest.raises(Exception, match="same values"):
         df.select(plc.detect("x", "x"))
+
+
+# --- rows that fit no narrow box must not fall into a wide one ---------------
+
+
+def _us(n, swapped_fraction, seed=0):
+    rng = np.random.default_rng(seed)
+    lon = rng.uniform(-125, -70, n)
+    lat = rng.uniform(25, 49, n)
+    k = int(swapped_fraction * n)
+    x = np.concatenate([lat[:k], lon[k:]])
+    y = np.concatenate([lon[:k], lat[k:]])
+    return pl.DataFrame({"x": x, "y": y})
+
+
+@pytest.mark.parametrize("fraction", [0.0, 0.05, 0.10, 0.30])
+def test_mostly_correct_orientation_reads_as_wgs84(fraction):
+    """A minority of reversed rows must not drag the column into another CRS."""
+    got = _us(20_000, fraction).select(plc.detect("x", "y")).item()
+    assert "EPSG:27700" not in got
+
+
+@pytest.mark.parametrize("fraction", [0.90, 1.0])
+def test_mostly_reversed_orientation_reads_as_swapped(fraction):
+    got = _us(20_000, fraction).select(plc.detect("x", "y")).item()
+    assert got == "swapped:EPSG:4326"
+
+
+@pytest.mark.parametrize("fraction", [0.50, 0.70])
+def test_partial_swap_names_both_orientations(fraction):
+    """Two sources merged with opposite axis order is the realistic case."""
+    got = _us(20_000, fraction).select(plc.detect("x", "y")).item()
+    assert got.startswith("mixed:")
+    assert "swapped:EPSG:4326" in got and "EPSG:4326" in got
+    assert "EPSG:27700" not in got
+
+
+def test_transposed_rd_is_raised_as_a_candidate():
+    """Not a verdict: genuine southern England BNG occupies the same region,
+    and nothing in the values separates the two."""
+    rng = np.random.default_rng(0)
+    df = pl.DataFrame(
+        {
+            "x": rng.uniform(300_000, 620_000, 2_000),
+            "y": rng.uniform(10_000, 280_000, 2_000),
+        }
+    )
+    assert (
+        "transposed-candidate:EPSG:28992"
+        in df.select(plc.detect_report("x", "y")).item()
+    )
+
+
+def test_genuine_bng_is_not_called_transposed():
+    """The check must not fire on real British data."""
+    got = _frame(BNG).select(plc.detect("x", "y")).item()
+    assert got == "EPSG:27700"
+
+
+@pytest.mark.parametrize("value", [-999.0, -9999.0, -99999.0, 0.0])
+def test_repeated_sentinels_are_not_coordinates(value):
+    """These are all real coordinates somewhere. Only their repetition marks
+    them as missing data."""
+    df = pl.DataFrame({"x": [value] * 500, "y": [value] * 500})
+    assert df.select(plc.detect("x", "y")).item() == "unknown"
+
+
+def test_minority_sentinels_are_dropped_and_counted():
+    df = pl.DataFrame(
+        {
+            "x": [121000.0] * 900 + [-999.0] * 100,
+            "y": [487000.0] * 900 + [-999.0] * 100,
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+    assert "placeholder[-999]=100/1000" in df.select(plc.detect_report("x", "y")).item()

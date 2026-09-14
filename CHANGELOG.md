@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.8
+
+Three bugs of the same shape: rows that fit no narrow range fell into British
+National Grid, whose box is wide enough to catch almost anything.
+
+- **Partial swaps produced a phantom.** Two sources merged with opposite axis
+  order is the realistic case. Between 50 and 90 percent reversed the column was
+  labelled part British, and below 50 percent the reversed rows were attributed
+  to BNG in the report. Axis order is now decided per row rather than per frame,
+  so a partial swap reads as `mixed:EPSG:4326|swapped:EPSG:4326`.
+- **Transposed Dutch RD was labelled EPSG:27700 at full confidence.** Turning RD
+  round moves it out of the Dutch box and into the British one. This is not
+  decidable from the values, since genuine southern England occupies the same
+  region, so it is now raised in `detect_report` as
+  `transposed-candidate:EPSG:28992` rather than acted on.
+- **Only `(0, 0)` was treated as a placeholder.** `(-999, -999)`,
+  `(-9999, -9999)` and the rest are at least as common in exported data, and a
+  file of them read as British with full confidence. Any repeated point on the
+  diagonal holding 5 percent or more of the rows is now dropped and reported as
+  `placeholder[value]=N/total`.
+
+Also:
+
+- The verdict and the per-system breakdown no longer disagree; both are built
+  from the same readings.
+- `Float64` input skips a redundant cast.
+- `numpy` added to the test requirements.
+
+Rows whose axis order cannot be checked, where the pair reads identically either
+way round, are no longer counted as evidence for the given order. They are
+apportioned by the rows that can be told apart, so a fully reversed column reads
+as reversed rather than as a mixture.
+
 ## 0.1.7
 
 - **The aggregating functions run in parallel.** `detect`, `detect_candidates`

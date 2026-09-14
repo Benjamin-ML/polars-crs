@@ -71,8 +71,13 @@ fn coord_pair(inputs: &[Series]) -> PolarsResult<(Float64Chunked, Float64Chunked
                 dt, i
             );
         }
-        let cast = s.cast(&DataType::Float64)?;
-        out.push(cast.f64()?.clone());
+        // Skip the copy when the column is already Float64. Cloning a
+        // ChunkedArray is an Arc bump; casting allocates.
+        if dt == &DataType::Float64 {
+            out.push(s.f64()?.clone());
+        } else {
+            out.push(s.cast(&DataType::Float64)?.f64()?.clone());
+        }
     }
 
     let y = out.pop().expect("two columns were pushed");
