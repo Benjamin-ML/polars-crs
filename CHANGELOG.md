@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.10
+
+- **`guess` used a different classifier from `detect`.** The elementwise API was
+  never routed through the fixes made since 0.1.1, so a reversed row read as
+  `EPSG:27700` there and as `swapped:EPSG:4326` in `detect`, with nothing to say
+  the two disagreed. Both now share one row classifier.
+
+  `candidates` deliberately stays raw containment; it exists to show overlap.
+  A placeholder is only visible across rows, so `guess` still labels a single
+  `(-999, -999)` by its range.
+
+- **Placeholder detection tested symmetry rather than sentinel-ness.** The rule
+  was `x == y`, which missed `(-999, -998)`, `(-999, 0)` and `(0, -999)`, common
+  when x and y come from columns with different defaults. A point is now a
+  placeholder when no system but a catch-all range contains it. A repeated real
+  location is kept: a depot in 95% of rows scores as EPSG:28992 like the rest.
+
+- **Partial transposition was invisible.** Only a whole-frame transposition was
+  reported. `transposed-candidate` now appears from 5% upwards.
+
+- **One fused pass per row.** The reading and the transposition check each
+  recomputed the range masks, so a row cost four sweeps instead of two.
+
+### Breaking
+
+`guess` returns `unknown` for `(0, 0)` and `swapped:EPSG:4326` for a reversed
+row, where it previously returned a plain EPSG code. That is the point of the
+change, but it will alter downstream filters.
+
+The report key `null-island=` became `placeholder[v]=` in 0.1.8, which breaks
+parsers written against 0.1.4 through 0.1.7. Placeholder values are now printed
+as `(x,y)` when they are asymmetric.
+
 ## 0.1.9
 
 Documentation only, no behaviour change.

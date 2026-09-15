@@ -9,6 +9,13 @@ use std::sync::OnceLock;
 /// coordinates occupy.
 pub struct Crs {
     pub code: &'static str,
+    /// Whether this range is wide enough to contain implausible values.
+    ///
+    /// EPSG:3857 spans the world, and EPSG:27700's official area of use
+    /// transforms to a box with negative eastings and northings past 1,200,000,
+    /// so both swallow anything the narrower systems reject. A repeated point
+    /// matched only by these is placeholder data rather than a location.
+    pub catch_all: bool,
     pub x_min: f64,
     pub x_max: f64,
     pub y_min: f64,
@@ -31,6 +38,7 @@ impl Crs {
 pub const CRS_DEFS: &[Crs] = &[
     Crs {
         code: "EPSG:4326",
+        catch_all: false,
         x_min: -180.0,
         x_max: 180.0,
         y_min: -90.0,
@@ -38,6 +46,7 @@ pub const CRS_DEFS: &[Crs] = &[
     },
     Crs {
         code: "EPSG:28992",
+        catch_all: false,
         x_min: -1000.0,
         x_max: 290000.0,
         y_min: 300000.0,
@@ -45,6 +54,7 @@ pub const CRS_DEFS: &[Crs] = &[
     },
     Crs {
         code: "EPSG:27700",
+        catch_all: true,
         x_min: -110000.0,
         x_max: 690000.0,
         y_min: -20000.0,
@@ -52,6 +62,7 @@ pub const CRS_DEFS: &[Crs] = &[
     },
     Crs {
         code: "EPSG:3857",
+        catch_all: true,
         x_min: -20037508.34,
         x_max: 20037508.34,
         y_min: -20048966.10,
@@ -85,19 +96,6 @@ pub fn match_mask(x: f64, y: f64) -> u8 {
         }
     }
     mask
-}
-
-/// Index of the narrowest matching system, or None. Lower is more specific.
-#[inline]
-pub fn narrowest_index(x: f64, y: f64) -> Option<usize> {
-    let mask = match_mask(x, y);
-    (mask != 0).then(|| mask.trailing_zeros() as usize)
-}
-
-/// Narrowest matching system, or None. Borrows a static str -- no allocation.
-#[inline]
-pub fn first_match(x: f64, y: f64) -> Option<&'static str> {
-    CRS_DEFS.iter().find(|c| c.contains(x, y)).map(|c| c.code)
 }
 
 /// Pipe-joined label for every possible mask, built once on first use.

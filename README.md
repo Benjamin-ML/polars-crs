@@ -75,7 +75,7 @@ Wheels are published for Linux (x86_64, aarch64), Windows (x64) and macOS
 | `detect(x, y)` | aggregation | One verdict for the whole column |
 | `detect_candidates(x, y)` | aggregation | Every system still consistent with all rows |
 | `guess(x, y)` | elementwise | Narrowest matching system, per row |
-| `candidates(x, y)` | elementwise | All matching systems, pipe-joined, per row |
+| `candidates(x, y)` | elementwise | Every system whose range contains the row, pipe-joined. Raw containment, deliberately: it exists to show overlap |
 | `detect_report(x, y)` | aggregation | Per-system detail, see [Reading the report](#reading-the-report) |
 | `is_rd_new(x, y)` | elementwise | Boolean, EPSG:28992 only |
 

@@ -23,7 +23,6 @@ WGS84 = [
     ("London", -0.1278, 51.5074, "EPSG:4326"),
     ("New York", -74.0060, 40.7128, "EPSG:4326"),
     ("Sydney", 151.2093, -33.8688, "EPSG:4326"),
-    ("Null Island", 0.0, 0.0, "EPSG:4326"),
 ]
 
 # --- EPSG:3857 - Web Mercator (computed, exact) -----------------------------

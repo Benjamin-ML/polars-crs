@@ -7,8 +7,8 @@
 use polars::prelude::*;
 use pyo3_polars::derive::polars_expr;
 
-use crate::crs::{first_match, mask_labels, match_mask, CRS_DEFS, RD_NEW, UNKNOWN};
-use crate::detect::{best, match_fractions, report, surviving};
+use crate::crs::{mask_labels, match_mask, CRS_DEFS, RD_NEW};
+use crate::detect::{best, label_row, match_fractions, report, surviving};
 use crate::parallel::par_map_str;
 
 /// True when the two columns are almost certainly the same column passed twice.
@@ -120,12 +120,21 @@ fn is_rd_new(inputs: &[Series]) -> PolarsResult<Series> {
     Ok(out.into_series())
 }
 
+/// Per-row label, using the same classifier as [`detect`].
+///
+/// Routing both through one classifier is deliberate: an earlier version left
+/// this on raw range membership, so a reversed row read as British here and as
+/// a reversed WGS84 coordinate there, with nothing to say the two disagreed.
+///
+/// Column-level evidence is unavailable row by row. A repeated placeholder is
+/// only recognisable across rows, so `(-999, -999)` is labelled by its range
+/// here and dropped by `detect`.
 #[polars_expr(output_type=String)]
 fn guess(inputs: &[Series]) -> PolarsResult<Series> {
     let (x, y) = coord_pair(inputs)?;
     let (x, y) = (&x, &y);
 
-    let out = par_map_str(x, y, "guess", |a, b| first_match(a, b).unwrap_or(UNKNOWN));
+    let out = par_map_str(x, y, "guess", label_row);
     Ok(out.into_series())
 }
 

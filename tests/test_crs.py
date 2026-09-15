@@ -153,15 +153,13 @@ def test_namespace_works_in_with_columns():
 # --- known limitations, pinned so a change is deliberate ---------------------
 
 
-@pytest.mark.parametrize("x,y", [(-999.0, -999.0), (-9999.0, -9999.0), (0.0, 0.0)])
-def test_sentinels_are_indistinguishable_from_real_coordinates(x, y):
+@pytest.mark.parametrize("x,y", [(-999.0, -999.0), (-9999.0, -9999.0)])
+def test_single_sentinel_row_is_labelled_by_its_range(x, y):
     """Documented limitation, see BUILD_PLAN.md.
 
-    Conventional missing-data sentinels fall inside real CRS ranges, so they
-    detect as valid coordinates rather than as missing data. Which system they
-    land on depends on the ranges; the point is that they are never flagged.
-    This is not fixable from the values alone -- (-999, -999) IS a real point
-    in several systems. Strip sentinels before detection.
+    A placeholder is only recognisable by repetition, which a single row cannot
+    show. Across a column they are dropped; on their own they are labelled by
+    whichever range contains them.
     """
     got = pl.DataFrame({"x": [x], "y": [y]}).select(plc.guess("x", "y")).item()
     assert got != "unknown"
@@ -183,8 +181,9 @@ def test_too_many_outliers_does_reject():
 
     Off-diagonal garbage, so it is not mistaken for a repeated placeholder.
     """
-    xs = [121000.0] * 50 + [9.9e11] * 50
-    ys = [487000.0] * 50 + [8.8e11] * 50
+    rng = np.random.default_rng(1)
+    xs = [121000.0] * 50 + list(rng.uniform(9e11, 1e12, 50))
+    ys = [487000.0] * 50 + list(rng.uniform(8e11, 9e11, 50))
     df = pl.DataFrame({"x": xs, "y": ys})
     assert df.select(plc.detect("x", "y")).item() == "unknown"
 
@@ -361,22 +360,35 @@ def test_no_phantom_system_at_any_contamination_level(dominant):
     assert got == "EPSG:28992", f"{dominant}: {got}"
 
 
+def _spread(kind, n, seed=2):
+    """Real coordinates vary. A single point repeated across a column is a
+    placeholder by definition, so a fixture built from one point tests the
+    wrong thing."""
+    rng = np.random.default_rng(seed)
+    if kind == "rd":
+        return rng.uniform(0, 290_000, n), rng.uniform(300_000, 640_000, n)
+    if kind == "wgs":
+        return rng.uniform(3, 7, n), rng.uniform(50, 54, n)
+    return rng.uniform(-2e7, 2e7, n), rng.uniform(-2e7, 2e7, n)
+
+
 @pytest.mark.parametrize(
-    "pairs,expected",
+    "kinds,expected",
     [
-        ([(RD_PT, 50), (MERC_PT, 50)], {"EPSG:28992", "EPSG:3857"}),
-        (
-            [(RD_PT, 33), (WGS_PT, 33), (MERC_PT, 33)],
-            {"EPSG:4326", "EPSG:28992", "EPSG:3857"},
-        ),
-        ([(WGS_PT, 50), (MERC_PT, 50)], {"EPSG:4326", "EPSG:3857"}),
+        (["rd", "merc"], {"EPSG:28992", "EPSG:3857"}),
+        (["wgs", "merc"], {"EPSG:4326", "EPSG:3857"}),
+        (["rd", "wgs", "merc"], {"EPSG:4326", "EPSG:28992", "EPSG:3857"}),
     ],
 )
-def test_mixtures_with_web_mercator_are_not_reported_as_mercator(pairs, expected):
+def test_mixtures_with_web_mercator_are_not_reported_as_mercator(kinds, expected):
     """EPSG:3857 contains nearly everything, so containment made it swallow
     any column it was merged into."""
-    rows = [p for pt, n in pairs for p in [pt] * n]
-    got = _pts(rows).select(plc.detect("x", "y")).item()
+    xs, ys = [], []
+    for k in kinds:
+        a, b = _spread(k, 500)
+        xs.extend(a)
+        ys.extend(b)
+    got = pl.DataFrame({"x": xs, "y": ys}).select(plc.detect("x", "y")).item()
     assert got.startswith("mixed:")
     assert set(got.removeprefix("mixed:").split("|")) == expected
 
@@ -647,3 +659,68 @@ def test_minority_sentinels_are_dropped_and_counted():
     )
     assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
     assert "placeholder[-999]=100/1000" in df.select(plc.detect_report("x", "y")).item()
+
+
+# --- guess and detect must never disagree ------------------------------------
+
+
+@pytest.mark.parametrize(
+    "x,y",
+    [
+        (40.0, -100.0),
+        (0.0, 0.0),
+        (121000.0, 487000.0),
+        (4.9, 52.4),
+        (545921.9, 6866867.1),
+        (530000.0, 180000.0),
+    ],
+)
+def test_guess_agrees_with_detect_on_a_single_row(x, y):
+    """The elementwise API was left on raw range membership for six releases,
+    so a reversed row read as British there and as reversed WGS84 in detect,
+    with nothing to say the two disagreed."""
+    df = pl.DataFrame({"x": [x], "y": [y]})
+    assert (
+        df.select(plc.guess("x", "y")).item() == df.select(plc.detect("x", "y")).item()
+    )
+
+
+@pytest.mark.parametrize(
+    "x,y", [(-999.0, -998.0), (-999.0, 0.0), (0.0, -999.0), (-99999.0, -99999.0)]
+)
+def test_asymmetric_placeholders_are_recognised(x, y):
+    """The rule tested x == y, which missed sentinels built from columns with
+    different defaults."""
+    df = pl.DataFrame({"x": [x] * 1000, "y": [y] * 1000})
+    assert df.select(plc.detect("x", "y")).item() == "unknown"
+
+
+def test_a_real_repeated_location_is_not_a_placeholder():
+    """A depot in most of the rows scores as the same system as the rest."""
+    df = pl.DataFrame(
+        {
+            "x": [121000.0] * 950 + [92000.0] * 50,
+            "y": [487000.0] * 950 + [437000.0] * 50,
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+
+
+@pytest.mark.parametrize("fraction", [0.05, 0.50, 0.80, 0.95])
+def test_partial_transposition_is_raised_at_any_fraction(fraction):
+    """Only whole-frame transposition was reported before."""
+    rng = np.random.default_rng(0)
+    n = 5_000
+    gx = rng.uniform(0, 290_000, n)
+    gy = rng.uniform(300_000, 640_000, n)
+    k = int(fraction * n)
+    df = pl.DataFrame(
+        {
+            "x": np.concatenate([gy[:k], gx[k:]]),
+            "y": np.concatenate([gx[:k], gy[k:]]),
+        }
+    )
+    assert (
+        "transposed-candidate:EPSG:28992"
+        in df.select(plc.detect_report("x", "y")).item()
+    )
