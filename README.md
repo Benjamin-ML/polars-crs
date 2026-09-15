@@ -1,11 +1,7 @@
 # polars-crs
 
-Detect which coordinate reference system a column of unlabelled `x`/`y` numbers
-is in, by looking at the values.
-
-You get a CSV with two numeric columns and no metadata. Nobody tells you the
-projection. Every existing tool requires you to already know - GeoPandas and
-pyproj make you declare it, polars-st reads an SRID that must already be there.
+Detect which coordinate reference system a column of unlabelled x/y numbers is
+in, by looking at the values.
 
 ```python
 import polars as pl
@@ -15,10 +11,53 @@ df = pl.DataFrame({"x": [121000.0, 92000.0], "y": [487000.0, 437000.0]})
 
 df.select(plc.detect("x", "y")).item()
 # 'EPSG:28992'   (Dutch RD New)
-
-df.with_columns(pl.col("x").crs.guess("y"))
-# per-row labels
 ```
+
+## Why you would want this
+
+You get a CSV with two numeric columns and no metadata. Nobody recorded the
+projection. Every existing tool requires you to already know it: GeoPandas and
+pyproj make you declare a CRS, and polars-st reads an SRID that has to be there
+already.
+
+Guessing wrong fails silently. Treat projected metres as degrees and the
+pipeline runs, the plot renders, and the number is wrong:
+
+```
+Amsterdam to Rotterdam, assuming lat/lon:   6,612.5 km
+Amsterdam to Rotterdam, after detecting:       57.7 km
+```
+
+No exception, no warning. `detect` turns that into a value you can assert on.
+
+## What you actually get
+
+A range check is easy to write yourself. Twenty lines of `when/then` will label
+most rows correctly, and on a clean column it will agree with this package. The
+difference is what happens on the columns that are not clean, which is most of
+the ones worth checking.
+
+| | |
+|---|---|
+| **Bounds derived from PROJ** | Each system's official area of use, sampled and transformed, not numbers typed from memory. A range slightly too narrow fails silently: the rows outside it simply eliminate the correct answer |
+| **Validated against ground truth** | `validate.py` generates real coordinates with pyproj and asks the detector to identify them |
+| **Mixed columns are named, not guessed** | Two sources merged returns `mixed:EPSG:4326\|EPSG:28992` rather than a third system that happens to contain both |
+| **Reversed axes are caught** | `lat,lon` instead of `lon,lat` returns `swapped:EPSG:4326`, including when only part of the file is reversed |
+| **Placeholders are not coordinates** | `(0,0)`, `(-999,-999)` and friends are real points somewhere; repeated, they are missing data, and are dropped and counted |
+| **Overlap is not mistaken for ambiguity** | British points genuinely fall inside the Dutch range. That is reported as overlap, not as a mixed column |
+| **It says what it could not check** | `axis-order=unverifiable` when both orders are valid, `transposed-candidate` when a transposition is plausible but undecidable |
+| **Trace contamination stays visible** | One bad row in 100,000 rounds to `0.00` but still reports as `/1` |
+
+Every one of those exists because it was found failing. The package is the
+accumulated result of nine rounds of adversarial testing, not a first draft.
+
+**On speed:** `detect` is about 3.6x faster than the nearest native equivalent
+on 10M rows. The elementwise `guess` is at parity with a hand-written
+`when/then` chain, so speed is not the reason to use it. Correctness is. See
+[Performance](#performance).
+
+**What it is:** a triage tool for unlabelled files. Not an authority. Confirm a
+verdict against a known landmark before reprojecting anything.
 
 ## Install
 
@@ -114,31 +153,45 @@ against a known landmark before reprojecting anything.
 
 ## Performance
 
-Five implementations of `guess`, identical output, best of three, release
-build, Apple Silicon with 10 cores:
+Measured on 0.1.8, best of five, release build, Apple Silicon with 10 cores.
 
-| Implementation | 1,000,000 rows | 10,000,000 rows |
-|---|---|---|
-| **plugin (Rust)** | **0.003 s** | **0.020 s** |
-| polars native `when/then` | 0.005 s | 0.042 s |
-| numpy | 0.083 s | 0.873 s |
-| `map_elements` | 0.418 s | (too slow) |
-| pure Python loop | 0.241 s | (too slow) |
+The honest comparison is against native Polars expressions, since a range check
+is expressible as a `when/then` chain without any Rust:
+
+| rows | `guess` | native `when/then` | `detect` | nearest native equivalent |
+|---|---|---|---|---|
+| 100,000 | 0.57 ms | 0.51 ms | 0.44 ms | 0.97 ms |
+| 1,000,000 | 1.81 ms | 2.54 ms | **2.00 ms** | 9.50 ms |
+| 10,000,000 | 23.46 ms | 23.38 ms | **27.55 ms** | 99.04 ms |
+
+`guess` is at parity. There is no speed argument for it.
+
+`detect` is 3.6x faster at 10M rows, because it makes one pass accumulating
+counts across cores rather than materialising a label column and aggregating it.
+
+The "nearest native equivalent" is not actually equivalent: it computes the
+modal narrowest label and nothing else. It does not detect reversed axes, does
+not distinguish a mixture from range overlap, does not recognise placeholders,
+and does not report what it could not check. Those are the reasons to use this,
+and none of them is practical to write as an expression chain.
+
+### For scale
+
+The alternatives people reach for first, on 1,000,000 rows:
+
+| Implementation | Time |
+|---|---|
+| plugin / native `when/then` | ~2 ms |
+| numpy | 83 ms |
+| pure Python loop | 241 ms |
+| `map_elements` | 418 ms |
+
+`map_elements` is the one worth avoiding: it calls back into Python once per
+row. But benchmarking a plugin only against it is measuring against a straw man,
+which is why the table above uses native expressions instead.
 
 Both the elementwise and the aggregating functions are split across cores, so
-throughput scales with the machine rather than with a single thread. On
-10,000,000 rows, `detect` takes 29 ms.
-
-Beyond speed:
-
-- **Correct bounds**, derived from PROJ areas of use and validated against
-  ground truth. This is the part that is actually hard, and that a hand-rolled
-  `when/then` chain with guessed numbers gets wrong.
-- **The aggregating functions.** `detect` and `detect_report` eliminate
-  candidates across rows with a tolerance threshold, which is awkward to
-  express as an expression chain.
-- **An API.** `pl.col("x").crs.detect("y")` rather than every user writing and
-  maintaining twenty lines of `when/then` with the bounds inlined.
+throughput scales with the machine rather than with a single thread.
 
 ## Development
 

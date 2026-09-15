@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.9
+
+Documentation only, no behaviour change.
+
+The README led with a performance table, which overstated the case. `guess` is
+at parity with a hand-written `when/then` chain, so speed is not a reason to use
+it; only `detect` is meaningfully faster, at about 3.6x on 10M rows.
+
+It now leads with what the package actually gets right on columns that are not
+clean: PROJ-derived bounds, mixed columns named rather than guessed, reversed
+axes caught including partial swaps, placeholders recognised, overlap
+distinguished from ambiguity, and an explicit account of what it could not
+check. Those came from nine rounds of adversarial testing and none is practical
+to reproduce as an expression chain.
+
+Earlier figures claiming the plugin was 2x native for the elementwise path have
+been removed; re-measurement shows parity.
+
 ## 0.1.8
 
 Three bugs of the same shape: rows that fit no narrow range fell into British
