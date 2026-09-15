@@ -1528,7 +1528,7 @@ dependencies = [
 
 [[package]]
 name = "polars-crs"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "polars",
  "polars-arrow",

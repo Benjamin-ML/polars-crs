@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.12
+
+- **Sentinels below 5% were invisible.** Not because of the threshold, but
+  because repeated points were tracked in slots filled on arrival: a file of
+  varying coordinates exhausted them before a sentinel appearing later in the
+  column was ever seen. Slots are now held by frequency, merged across threads
+  with the same rule, and every repeated point is named as `repeated[v]=N`
+  whatever its share. The 5% rule now decides only whether it changes the
+  verdict.
+- **`(-1, -1)` was never a placeholder.** It sits inside the WGS84 box, so a
+  containment test cannot flag it. A repeated point is now also a placeholder
+  when it reads as a different system from the rest of the column. The depot
+  case still passes: a real location agrees with its surroundings.
+- **`swapped` and `transposed-candidate` reported the same thing twice**, and a
+  clean British file carried a candidate line for the tenth of its rows that
+  also fit the Dutch box transposed. The candidate is now raised only for rows a
+  wide range is actually holding, and only when it accounts for essentially all
+  of them.
+- Repeated-point detection samples rather than scanning every row, since a
+  repeat shows up in a sample in proportion to its share. `detect` on 5,000,000
+  rows is 9.7 ms, down from 15 ms.
+
+Still open: a file mixing Dutch RD with transposed Dutch RD reads as
+`mixed:EPSG:28992|EPSG:27700`. The transposed half genuinely occupies the
+British box.
+
 ## 0.1.11
 
 - **The declared minimum `polars` version was wrong.** The package claimed

@@ -34,9 +34,25 @@ pub const SENTINEL_MIN: f64 = 0.05;
 /// through, and nothing real is measured to this precision.
 pub const ZERO_EPS: f64 = 1e-9;
 
-/// How many distinct repeated points to track while looking for placeholders.
-/// Real coordinate data exhausts this immediately and stops paying for it.
-const SENTINEL_SLOTS: usize = 16;
+/// How many candidate points to track while looking for placeholders.
+///
+/// Slots are held by frequency, not by arrival order. Filling them first-come
+/// meant a file of varying coordinates exhausted them before a sentinel
+/// appearing later in the column was ever seen.
+const SENTINEL_SLOTS: usize = 64;
+
+/// A repeated point holding at least this share is named in the report, even
+/// when it is too small to change the verdict.
+pub const SENTINEL_REPORT_MIN: f64 = 0.005;
+
+/// At most this many rows per slice are examined when looking for repeated
+/// points.
+///
+/// A placeholder is repeated by definition, so it turns up in a sample in
+/// proportion to its share. Examining every row instead made the slot
+/// bookkeeping dominate the runtime on varying data, where it can never find
+/// anything: `detect` on 5,000,000 rows went from 15 ms to 59 ms.
+const SENTINEL_SAMPLE: usize = 4096;
 
 /// How a row is best read.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -165,12 +181,26 @@ impl Tally {
         }
     }
 
+    /// Count repeated points, keeping exact counts for whatever is retained.
+    ///
+    /// When the slots are full, a slot still holding a single sighting is
+    /// replaced; if every slot is holding a repeat, the new point is dropped.
+    /// Counts are never inherited. An earlier version used Space-Saving, whose
+    /// inheritance inflates one-off points until they look like repeats, which
+    /// produced dozens of false candidates and an expensive recount.
     fn bump_repeat(&mut self, x: f64, y: f64) {
         let key = (x.to_bits(), y.to_bits());
         if let Some(slot) = self.repeats.iter_mut().find(|(k, _)| *k == key) {
             slot.1 += 1;
-        } else if self.repeats.len() < SENTINEL_SLOTS {
+            return;
+        }
+        if self.repeats.len() < SENTINEL_SLOTS {
             self.repeats.push((key, 1));
+            return;
+        }
+        if let Some(slot) = self.repeats.iter_mut().find(|(_, c)| *c == 1) {
+            slot.0 = key;
+            slot.1 = 1;
         }
     }
 
@@ -190,11 +220,22 @@ impl Tally {
         self.order_ambiguous += other.order_ambiguous;
         self.seen += other.seen;
         self.zeros += other.zeros;
+        // Merge with the same eviction rule as bump_repeat. Appending only
+        // while free slots remain meant the first slice filled them and every
+        // later slice's findings were discarded, so a sentinel in the tail of a
+        // column was never seen.
         for (k, c) in other.repeats {
             if let Some(slot) = self.repeats.iter_mut().find(|(kk, _)| *kk == k) {
                 slot.1 += c;
             } else if self.repeats.len() < SENTINEL_SLOTS {
                 self.repeats.push((k, c));
+            } else if let Some(slot) = self
+                .repeats
+                .iter_mut()
+                .min_by_key(|(_, cc)| *cc)
+                .filter(|(_, cc)| *cc < c)
+            {
+                *slot = (k, c);
             }
         }
         self
@@ -225,8 +266,25 @@ impl Tally {
     }
 }
 
+/// Exact count of each candidate point. Space-Saving only bounds them.
+fn count_exactly(x: &Float64Chunked, y: &Float64Chunked, points: &[(f64, f64)]) -> Vec<usize> {
+    let mut out = vec![0usize; points.len()];
+    for (a, b) in x.into_iter().zip(y) {
+        let (Some(a), Some(b)) = (a, b) else { continue };
+        for (i, (px, py)) in points.iter().enumerate() {
+            if a == *px && b == *py {
+                out[i] += 1;
+                break;
+            }
+        }
+    }
+    out
+}
+
 fn tally_slice(x: &Float64Chunked, y: &Float64Chunked) -> Tally {
     let mut t = Tally::new();
+    let stride = (x.len() / SENTINEL_SAMPLE).max(1);
+    let mut row = 0usize;
     for (a, b) in x.into_iter().zip(y) {
         let (Some(a), Some(b)) = (a, b) else { continue };
         if a.is_nan() || b.is_nan() {
@@ -237,7 +295,10 @@ fn tally_slice(x: &Float64Chunked, y: &Float64Chunked) -> Tally {
             continue;
         }
         t.seen += 1;
-        t.bump_repeat(a, b);
+        if row.is_multiple_of(stride) {
+            t.bump_repeat(a, b);
+        }
+        row += 1;
 
         let r = read_row(a, b);
         for (i, c) in t.contains.iter_mut().enumerate() {
@@ -245,8 +306,13 @@ fn tally_slice(x: &Float64Chunked, y: &Float64Chunked) -> Tally {
                 *c += 1;
             }
         }
+        // Only rows that landed in a catch-all range are candidates. A row
+        // already read as a reversed WGS84 coordinate is explained; repeating
+        // it as a transposition candidate says the same thing twice.
         if let Some(i) = r.transposed_to {
-            t.transposable[i] += 1;
+            if matches!(r.reading, Reading::AsGiven(j) if CRS_DEFS[j].catch_all) {
+                t.transposable[i] += 1;
+            }
         }
         match r.reading {
             Reading::AsGiven(i) => t.narrowest[i] += 1,
@@ -285,6 +351,8 @@ pub struct Stats {
     pub sentinels: usize,
     /// The placeholder values that were dropped.
     pub sentinel_values: Vec<(f64, f64)>,
+    /// Every repeated point seen, whether or not it changed the verdict.
+    pub repeated_points: Vec<((f64, f64), usize)>,
 }
 
 /// Nulls and NaNs are skipped rather than counted as misses: absent data is not
@@ -321,43 +389,62 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
 
     // Decide which repeated points are missing-value placeholders.
     //
-    // A repeated point is a placeholder when the rest of the column reads as a
-    // more specific system than the point itself, or when nothing but a
-    // catch-all range contains it. That keeps a real repeated location: a depot
-    // appearing in 95% of rows scores as EPSG:28992 like everything else, so it
-    // is kept, while (-999, -999) is matched only by a range wide enough to
-    // swallow anything.
-    //
-    // Testing the value rather than its shape also catches asymmetric sentinels
-    // such as (-999, 0), which are common when x and y come from columns with
-    // different defaults.
+    // Space-Saving counts are upper bounds, so any candidate is recounted
+    // exactly before it is named or acted on. Candidates are few, usually none,
+    // so the recount is cheap and skipped entirely when there are no repeats
+    // worth checking.
     let mut sentinel_values = Vec::new();
+    let mut observed: Vec<((f64, f64), usize)> = Vec::new();
     if t.seen > 0 {
-        let floor = ((SENTINEL_MIN * t.seen as f64).ceil() as usize).max(2);
-        let candidates: Vec<(f64, f64, usize)> = t
+        // Counts here came from a sample, so compare against a scaled floor.
+        // Candidates are recounted exactly below, which is what is acted on.
+        let sampled = t.repeats.iter().map(|(_, c)| *c).sum::<usize>().max(1);
+        let sample_floor = ((SENTINEL_REPORT_MIN * sampled as f64).ceil() as usize).max(2);
+        let report_floor = ((SENTINEL_REPORT_MIN * t.seen as f64).ceil() as usize).max(2);
+        let candidates: Vec<(f64, f64)> = t
             .repeats
             .iter()
-            .filter(|(_, c)| *c >= floor)
-            .map(|((kx, ky), c)| (f64::from_bits(*kx), f64::from_bits(*ky), *c))
+            .filter(|(_, c)| *c >= sample_floor)
+            .map(|((kx, ky), _)| (f64::from_bits(*kx), f64::from_bits(*ky)))
             .collect();
 
-        for (px, py, count) in candidates {
-            // A placeholder is a point that only a catch-all range contains.
-            // Every narrower system rejects it, which is what distinguishes
-            // (-999, -999) from a depot appearing in most of the rows: the
-            // depot scores as EPSG:28992 like the rest of the column.
-            //
-            // Judged on the value rather than its shape, so asymmetric
-            // sentinels such as (-999, 0) are caught too. Those are common when
-            // x and y come from columns with different defaults.
-            let is_placeholder = match read_row(px, py).reading {
-                Reading::None => true,
-                Reading::AsGiven(i) | Reading::Swapped(i) => CRS_DEFS[i].catch_all,
-                Reading::Ambiguous => false,
-            };
-            if is_placeholder {
-                t.discount(px, py, count);
-                sentinel_values.push((px, py));
+        if !candidates.is_empty() {
+            let exact = count_exactly(x, y, &candidates);
+            let drop_floor = ((SENTINEL_MIN * t.seen as f64).ceil() as usize).max(2);
+
+            // what the column reads as, ignoring the candidates
+            let rest_best = t
+                .narrowest
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| **n > 0)
+                .max_by_key(|(_, n)| **n)
+                .map(|(i, _)| i);
+
+            for ((px, py), count) in candidates.iter().zip(exact) {
+                if count < report_floor {
+                    continue;
+                }
+                observed.push(((*px, *py), count));
+
+                // A placeholder is a point the column disagrees with: either
+                // nothing but a catch-all range contains it, or it reads as a
+                // different system from everything around it. A real repeated
+                // location agrees, so a depot in most of the rows is kept.
+                let own = match read_row(*px, *py).reading {
+                    Reading::None => None,
+                    Reading::AsGiven(i) | Reading::Swapped(i) => Some(i),
+                    Reading::Ambiguous => Some(WGS84),
+                };
+                let is_placeholder = match (own, rest_best) {
+                    (None, _) => true,
+                    (Some(o), Some(r)) => CRS_DEFS[o].catch_all || o != r,
+                    (Some(o), None) => CRS_DEFS[o].catch_all,
+                };
+                if is_placeholder && count >= drop_floor {
+                    t.discount(*px, *py, count);
+                    sentinel_values.push((*px, *py));
+                }
             }
         }
     }
@@ -374,6 +461,7 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
             seen: 0,
             sentinels: t.zeros,
             sentinel_values,
+            repeated_points: observed,
         };
     }
     // Rows that read the same either way round go to whichever orientation the
@@ -405,6 +493,7 @@ pub fn match_fractions(x: &Float64Chunked, y: &Float64Chunked) -> Stats {
         seen: t.seen,
         sentinels: t.zeros,
         sentinel_values,
+        repeated_points: observed,
     }
 }
 
@@ -503,10 +592,36 @@ pub fn report(st: &Stats) -> String {
         if st.order_ambiguous >= DOMINANT {
             out.push("axis-order=unverifiable".to_string());
         }
-        for (crs, share) in CRS_DEFS.iter().zip(st.transposable.iter()) {
-            if *share >= MIXTURE_MIN {
-                out.push(format!("transposed-candidate:{}={:.2}", crs.code, share));
+        // A transposition candidate is only worth raising when it accounts for
+        // the rows a catch-all range is currently holding. On a clean British
+        // file about a tenth of rows would also fit the Dutch box transposed,
+        // which is overlap noise on a correct answer rather than a finding.
+        let container = st
+            .narrowest
+            .iter()
+            .enumerate()
+            .filter(|(i, n)| CRS_DEFS[*i].catch_all && **n > 0.0)
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(_, n)| *n)
+            .unwrap_or(0.0);
+        if container >= MIXTURE_MIN {
+            for (crs, share) in CRS_DEFS.iter().zip(st.transposable.iter()) {
+                if *share >= 0.9 * container {
+                    out.push(format!("transposed-candidate:{}={:.2}", crs.code, share));
+                }
             }
+        }
+    }
+
+    for ((px, py), count) in &st.repeated_points {
+        let dropped = st.sentinel_values.contains(&(*px, *py));
+        if !dropped {
+            let label = if px == py {
+                format!("{}", px)
+            } else {
+                format!("({},{})", px, py)
+            };
+            out.push(format!("repeated[{}]={}", label, count));
         }
     }
 

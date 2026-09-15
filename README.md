@@ -145,10 +145,15 @@ the correct system.
    recognised.
 6. **No reprojection.** Converting between systems needs datum shifts and OSTN
    grids - that is pyproj's job and it does it properly.
-7. **Swapped axes are only caught outside +/-90.** A reversed pair is detected
+7. **Transposed national grids are reported, not resolved.** A file that is
+   half Dutch RD and half the same data with the axes flipped reads as
+   `mixed:EPSG:28992|EPSG:27700`, with `transposed-candidate:EPSG:28992` in the
+   report. The transposed half genuinely occupies the British box and nothing in
+   the values separates the two.
+8. **Swapped axes are only caught outside +/-90.** A reversed pair is detected
    when some row carries a longitude beyond the latitude range. Within it, both
    orders are valid WGS84 coordinates and the values cannot distinguish them.
-8. **Wheels do not cover every platform.** Intel macOS and musl-based images
+9. **Wheels do not cover every platform.** Intel macOS and musl-based images
    such as Alpine fall back to building the sdist, which needs a Rust toolchain.
 
 This is a triage tool for unlabelled files, not an authority. Confirm a verdict
@@ -163,13 +168,15 @@ is expressible as a `when/then` chain without any Rust:
 
 | rows | `guess` | native `when/then` | `detect` | nearest native equivalent |
 |---|---|---|---|---|
-| 100,000 | 0.57 ms | 0.51 ms | 0.44 ms | 0.97 ms |
-| 1,000,000 | 1.81 ms | 2.54 ms | **2.00 ms** | 9.50 ms |
-| 10,000,000 | 23.46 ms | 23.38 ms | **27.55 ms** | 99.04 ms |
+| 1,000,000 | 2.9 ms | 2.5 ms | **2.0 ms** | 9.5 ms |
+| 5,000,000 | 12.7 ms | 12.4 ms | **9.7 ms** | 49 ms |
+| 10,000,000 | 30.9 ms | 23.4 ms | **18.2 ms** | 99 ms |
 
-`guess` is at parity. There is no speed argument for it.
+`guess` is close to parity and slightly behind at 10M, which is the cost of it
+running the same two-orientation check as `detect` rather than a single range
+sweep. There is no speed argument for it; there is a consistency argument.
 
-`detect` is 3.6x faster at 10M rows, because it makes one pass accumulating
+`detect` is about 5x faster at 10M rows, because it makes one pass accumulating
 counts across cores rather than materialising a label column and aggregating it.
 
 The "nearest native equivalent" is not actually equivalent: it computes the

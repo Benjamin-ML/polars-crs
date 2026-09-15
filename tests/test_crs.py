@@ -724,3 +724,71 @@ def test_partial_transposition_is_raised_at_any_fraction(fraction):
         "transposed-candidate:EPSG:28992"
         in df.select(plc.detect_report("x", "y")).item()
     )
+
+
+# --- repeated points must be found wherever they sit in the column -----------
+
+
+@pytest.mark.parametrize("share,total", [(0.005, 200_000), (0.03, 50_000)])
+def test_small_sentinel_is_named_even_when_it_cannot_change_the_verdict(share, total):
+    """Below the drop threshold it must still be reported.
+
+    It also has to be *found*: the sentinels sit at the end of the column, and
+    an earlier slot scheme filled on arrival, so a file of varying coordinates
+    exhausted the slots before the first sentinel appeared.
+    """
+    rng = np.random.default_rng(3)
+    k = int(share * total)
+    m = total - k
+    df = pl.DataFrame(
+        {
+            "x": np.concatenate([rng.uniform(0, 290_000, m), np.full(k, -999.0)]),
+            "y": np.concatenate([rng.uniform(300_000, 640_000, m), np.full(k, -999.0)]),
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+    assert f"repeated[-999]={k}" in df.select(plc.detect_report("x", "y")).item()
+
+
+def test_placeholder_inside_a_real_range_is_still_a_placeholder():
+    """(-1, -1) sits inside the WGS84 box, so a containment test misses it.
+
+    What marks it is that the rest of the column reads as a different system.
+    """
+    rng = np.random.default_rng(4)
+    df = pl.DataFrame(
+        {
+            "x": np.concatenate([rng.uniform(0, 290_000, 500), np.full(500, -1.0)]),
+            "y": np.concatenate(
+                [rng.uniform(300_000, 640_000, 500), np.full(500, -1.0)]
+            ),
+        }
+    )
+    assert df.select(plc.detect("x", "y")).item() == "EPSG:28992"
+    assert "placeholder[-1]=500/1000" in df.select(plc.detect_report("x", "y")).item()
+
+
+def test_transposition_candidate_is_silent_on_a_clean_answer():
+    """About a tenth of British rows also fit the Dutch box transposed. That is
+    overlap noise, not a finding."""
+    rng = np.random.default_rng(5)
+    df = pl.DataFrame(
+        {
+            "x": rng.uniform(-100_000, 690_000, 2_000),
+            "y": rng.uniform(-20_000, 1_260_000, 2_000),
+        }
+    )
+    assert "transposed-candidate" not in df.select(plc.detect_report("x", "y")).item()
+
+
+def test_swapped_is_not_also_reported_as_a_transposition_candidate():
+    """One key, one number. A row already read as reversed is explained."""
+    df = pl.DataFrame(
+        {
+            "x": [37.8, 40.7, 41.9, 34.1, 42.4],
+            "y": [-122.4, -74.0, -87.6, -118.2, -71.1],
+        }
+    )
+    got = df.select(plc.detect_report("x", "y")).item()
+    assert "swapped:EPSG:4326" in got
+    assert "transposed-candidate" not in got
