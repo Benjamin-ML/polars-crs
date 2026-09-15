@@ -65,6 +65,9 @@ verdict against a known landmark before reprojecting anything.
 pip install polars-crs
 ```
 
+Requires `polars >= 1.4.0`. Earlier versions cannot run a scalar-returning
+plugin inside `group_by`, so the aggregating functions fail there.
+
 Wheels are published for Linux (x86_64, aarch64), Windows (x64) and macOS
 (Apple Silicon). Intel macOS builds from the sdist and needs a Rust toolchain.
 

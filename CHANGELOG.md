@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.11
+
+- **The declared minimum `polars` version was wrong.** The package claimed
+  `>=1.3.0`, but 1.3.0 cannot run a scalar-returning plugin inside `group_by`
+  and fails with "this expression cannot run in the group_by context". The
+  minimum is 1.4.0 and is now declared as such. The CI job that pins the
+  minimum was pinning the wrong version too, which is how it went unnoticed
+  until the job started failing.
+
 ## 0.1.10
 
 - **`guess` used a different classifier from `detect`.** The elementwise API was
